@@ -45,19 +45,29 @@ jobs:
           exit 1
         shell: pwsh
 
-      # 步骤3: 拉取 Skia 源码
-      - name: 'Fetch Skia Source Code'
+      # 步骤3: 拉取 Skia 稳定分支并同步依赖 (已更新)
+      - name: 'Fetch Skia Stable Branch and Sync Dependencies'
         run: |
-          mkdir skia_source && cd skia_source
-          fetch skia
-        shell: cmd
+          # [重要] 设置要构建的稳定分支
+          $skia_branch = "chrome/m126"
+          
+          # 克隆skia仓库
+          git clone https://skia.googlesource.com/skia.git skia_source
+          cd skia_source
+          
+          # 检出稳定分支
+          git checkout $skia_branch
+          
+          # [重要] 使用 python 同步该分支对应的依赖项
+          python tools/git-sync-deps
+        shell: pwsh
 
-      # 步骤4: 生成构建配置 (GN) (已更新为 C++20)
+      # 步骤4: 生成构建配置 (GN) (已更新)
       - name: 'Generate Build Files (GN)'
-        working-directory: ./skia_source/skia
+        working-directory: ./skia_source
         run: |
           # 定义 GN 参数
-          # [重要] extra_cflags 已设置为强制使用 C++20 标准
+          # 稳定分支使用其默认的 C++17 标准即可成功编译
           $gn_args = @(
             'is_official_build=true',
             'skia_enable_wasm=false',
@@ -67,17 +77,16 @@ jobs:
             'skia_use_gl=true',
             'skia_use_d3d=true',
             'skia_enable_shared_libs=true',
-            'skia_build_for_wincodec=true',
-            'extra_cflags=[\"/std:c++20\"]'
+            'skia_build_for_wincodec=true'
           ) -join ' '
           
-          python tools/git-sync-deps
+          # 执行 gn gen 命令
           gn gen out/Release-x64 --args="$gn_args"
         shell: pwsh
 
       # 步骤5: 编译 Skia
       - name: 'Compile Skia with Ninja'
-        working-directory: ./skia_source/skia
+        working-directory: ./skia_source
         run: |
           ninja -C out/Release-x64 skia skshaper skparagraph
         shell: cmd
@@ -87,9 +96,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path "dist/bin"
           New-Item -ItemType Directory -Path "dist/lib"
-          Copy-Item -Path "skia_source/skia/include" -Destination "dist/include" -Recurse
-          Get-ChildItem -Path "skia_source/skia/out/Release-x64" -Filter "*.dll" | Copy-Item -Destination "dist/bin"
-          Get-ChildItem -Path "skia_source/skia/out/Release-x64" -Filter "*.lib" | Copy-Item -Destination "dist/lib"
+          Copy-Item -Path "skia_source/include" -Destination "dist/include" -Recurse
+          Get-ChildItem -Path "skia_source/out/Release-x64" -Filter "*.dll" | Copy-Item -Destination "dist/bin"
+          Get-ChildItem -Path "skia_source/out/Release-x64" -Filter "*.lib" | Copy-Item -Destination "dist/lib"
         shell: pwsh
 
       # 步骤7: 生成 CMake 配置文件
