@@ -45,10 +45,10 @@ jobs:
           exit 1
         shell: pwsh
 
-      # 步骤3: 拉取 Skia 稳定分支并同步依赖 (已更新)
-      - name: 'Fetch Skia Stable Branch and Sync Dependencies'
+      # 步骤3: 拉取 Skia 并生成构建配置 (已更新)
+      - name: 'Fetch Skia and Generate Build Files'
         run: |
-          # [重要] 设置要构建的稳定分支
+          # 设置要构建的稳定分支
           $skia_branch = "chrome/m126"
           
           # 克隆skia仓库
@@ -57,17 +57,8 @@ jobs:
           
           # 检出稳定分支
           git checkout $skia_branch
-          
-          # [重要] 使用 python 同步该分支对应的依赖项
-          python tools/git-sync-deps
-        shell: pwsh
 
-      # 步骤4: 生成构建配置 (GN) (已更新)
-      - name: 'Generate Build Files (GN)'
-        working-directory: ./skia_source
-        run: |
           # 定义 GN 参数
-          # 稳定分支使用其默认的 C++17 标准即可成功编译
           $gn_args = @(
             'is_official_build=true',
             'skia_enable_wasm=false',
@@ -79,9 +70,17 @@ jobs:
             'skia_enable_shared_libs=true',
             'skia_build_for_wincodec=true'
           ) -join ' '
-          
-          # 执行 gn gen 命令
+
+          # [重要] 先运行 gn gen 创建构建配置
           gn gen out/Release-x64 --args="$gn_args"
+        shell: pwsh
+      
+      # 步骤4: 同步依赖项 (已更新)
+      - name: 'Sync Dependencies'
+        working-directory: ./skia_source
+        run: |
+          # [重要] 现在再运行依赖同步，它会读取上一步的配置
+          python tools/git-sync-deps
         shell: pwsh
 
       # 步骤5: 编译 Skia
