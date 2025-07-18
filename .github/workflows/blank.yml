@@ -104,43 +104,14 @@ jobs:
       # // 动态生成 CMakeLists.txt，用于提供开箱即用的 find_package 支持
       - name: 'Generate CMakeLists.txt for Package'
         run: |
-          $cmake_content = @"
-      # // CMake 最低版本要求
-      cmake_minimum_required(VERSION 3.15)
-
-      # // 项目名称
-      project(SkiaPrebuilt)
-
-      # // 打印状态信息，告知用户 Skia 包已找到
-      message(STATUS "Found pre-built Skia package")
-
-      # // 定义 Skia::Skia 导入目标 (IMPORTED SHARED LIBRARY)
-      # // 这是一个虚拟目标，代表了预编译的 Skia 库
-      add_library(Skia::Skia SHARED IMPORTED GLOBAL)
-
-      # // 设置目标属性
-      set_target_properties(Skia::Skia PROPERTIES
-          # // 指定头文件目录
-          INTERFACE_INCLUDE_DIRECTORIES "\${CMAKE_CURRENT_LIST_DIR}/include"
-
-          # // 指定 DLL 文件的位置 (用于运行时)
-          IMPORTED_LOCATION "\${CMAKE_CURRENT_LIST_DIR}/bin/skia.dll"
-          
-          # // 指定导入库文件的位置 (用于链接)
-          IMPORTED_IMPLIB "\${CMAKE_CURRENT_LIST_DIR}/lib/skia.lib"
-          
-          # // 指定需要链接的其他 Skia 模块库和平台相关的图形API库
-          # // 这样用户链接 Skia::Skia 时，会自动链接这些依赖
-          INTERFACE_LINK_LIBRARIES "
-              \${CMAKE_CURRENT_LIST_DIR}/lib/skshaper.lib;
-              \${CMAKE_CURRENT_LIST_DIR}/lib/skparagraph.lib;
-              opengl32;
-              d3d11;
-              dxgi;
-              dxguid
-          "
-      )
-      "@
+          $cmake_content = '# // CMake 最低版本要求\ncmake_minimum_required(VERSION 3.15)' +
+          '\n\n# // 项目名称\nproject(SkiaPrebuilt)' +
+          '\n\n# // 打印状态信息，告知用户 Skia 包已找到\nmessage(STATUS "Found pre-built Skia package")' +
+          '\n\n# // 定义 Skia::Skia 导入目标 (IMPORTED SHARED LIBRARY)\n# // 这是一个虚拟目标，代表了预编译的 Skia 库\nadd_library(Skia::Skia SHARED IMPORTED GLOBAL)' +
+          '\n\n# // 设置目标属性\nset_target_properties(Skia::Skia PROPERTIES\n# // 指定头文件目录\nINTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/include"' +
+          '\n\n# // 指定 DLL 文件的位置 (用于运行时)\nIMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/bin/skia.dll"' +
+          '\n\n# // 指定导入库文件的位置 (用于链接)\nIMPORTED_IMPLIB "${CMAKE_CURRENT_LIST_DIR}/lib/skia.lib"' +
+          '\n\n# // 指定需要链接的其他 Skia 模块库和平台相关的图形API库\n# // 这样用户链接 Skia::Skia 时，会自动链接这些依赖\nINTERFACE_LINK_LIBRARIES "\n${CMAKE_CURRENT_LIST_DIR}/lib/skshaper.lib;\n${CMAKE_CURRENT_LIST_DIR}/lib/skparagraph.lib;\nopengl32;\nd3d11;\ndxgi;\ndxguid\n"\n)'
           $cmake_content | Out-File -FilePath "dist/CMakeLists.txt" -Encoding utf8
         shell: pwsh
 
