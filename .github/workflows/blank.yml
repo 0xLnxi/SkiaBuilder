@@ -19,44 +19,63 @@ jobs:
 
     # // 任务步骤
     steps:
-      # // 步骤1: 检出代码 (虽然此工作流不直接使用仓库代码，但这是个好习惯)
+      # // 步骤1: 检出代码
       - name: 'Checkout Repository'
         uses: actions/checkout@v4
 
-      # // 步骤2: 安装 Google Depot Tools
+      # // 步骤2: 安装 Google Depot Tools (已添加重试逻辑)
       # // Depot Tools 是构建 Skia 及其依赖项所必需的工具集
-      - name: 'Install Google Depot Tools'
-        run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          echo "$PWD/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: 'Install Google Depot Tools with Retry'
         shell: pwsh
-
-      # // 步骤3: 拉取 Skia 源码
-      # // 使用 depot_tools 中的 fetch 工具拉取 Skia 及其所有依赖
-      - name: 'Fetch Skia Source Code'
         run: |
-          # // 创建一个目录用于存放 Skia 源码
-          mkdir skia_source && cd skia_source
-          # // 执行 fetch，会自动处理 gclient sync
-          fetch skia
-        shell: cmd
+          $maxRetries = 5
+          $delaySeconds = 15
+          for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+            Write-Host "Attempting to clone depot_tools (Attempt $attempt of $maxRetries)..."
+            git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "depot_tools cloned successfully."
+              echo "$PWD/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              return
+            }
+            Write-Warning "Failed to clone depot_tools. Retrying in $delaySeconds seconds..."
+            Start-Sleep -Seconds $delaySeconds
+          }
+          Write-Error "Could not clone depot_tools after $maxRetries attempts."
+          exit 1
+          
+      # // 步骤3: 拉取 Skia 源码 (已添加重试逻辑)
+      # // 使用 depot_tools 中的 fetch 工具拉取 Skia 及其所有依赖
+      - name: 'Fetch Skia Source Code with Retry'
+        shell: pwsh
+        run: |
+          mkdir skia_source
+          cd skia_source
+          
+          $maxRetries = 3
+          $delaySeconds = 30
+          for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+            Write-Host "Attempting to fetch skia (Attempt $attempt of $maxRetries)..."
+            fetch skia
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Skia fetched successfully."
+              return
+            }
+            Write-Warning "Failed to fetch skia. Retrying in $delaySeconds seconds..."
+            # // 在重试前，清理可能不完整的下载，防止 fetch 工具出错
+            if (Test-Path "skia") {
+              Remove-Item -Recurse -Force "skia"
+            }
+            Start-Sleep -Seconds $delaySeconds
+          }
+          Write-Error "Could not fetch skia after $maxRetries attempts."
+          exit 1
 
       # // 步骤4: 生成构建配置 (GN)
-      # // 使用 GN (Generate Ninja) 工具创建 Ninja 构建文件
-      # // 这是最关键的一步，我们在这里配置所有编译选项
       - name: 'Generate Build Files (GN)'
         working-directory: ./skia_source/skia
+        shell: pwsh
         run: |
-          # // 定义 GN 参数
-          # // is_official_build=true       - 启用优化，相当于Release模式
-          # // skia_use_dawn=true           - 启用 DAWN 后端，这是 Graphite 的核心
-          # // skia_enable_graphite=true    - 启用 Graphite 渲染管线
-          # // skia_use_ganesh=true         - 启用 Ganesh 渲染管线
-          # // skia_use_gl=true             - 为 Ganesh 启用 OpenGL 后端
-          # // skia_use_d3d=true            - 为 Ganesh 启用 Direct3D 后端
-          # // skia_enable_shared_libs=true - 构建为共享库 (DLL)
-          # // skia_build_for_wincodec=true - 在Windows上启用WIC编解码器支持
-          # // extra_cflags=["/MT"]         - 使用静态链接的C++运行时库，避免用户缺少VC++ aistributable的问题
           $gn_args = @(
             'is_official_build=true',
             'skia_use_dawn=true',
@@ -69,51 +88,68 @@ jobs:
             'extra_cflags=["/MT"]'
           ) -join ' '
           
-          # // 执行 gn gen 命令
           python tools/git-sync-deps
           gn gen out/Release-x64 --args="$gn_args"
-        shell: pwsh
 
       # // 步骤5: 编译 Skia
-      # // 使用 Ninja 工具根据生成的配置进行高速并行编译
       - name: 'Compile Skia with Ninja'
         working-directory: ./skia_source/skia
+        shell: cmd
         run: |
           ninja -C out/Release-x64 skia skshaper skparagraph dawn
-        shell: cmd
 
       # // 步骤6: 准备打包文件 (Staging)
-      # // 创建一个临时目录，并将所有需要的文件按指定结构整理好
       - name: 'Stage Artifacts'
+        shell: pwsh
         run: |
-          # // 创建目标目录结构
           New-Item -ItemType Directory -Path "dist/bin"
           New-Item -ItemType Directory -Path "dist/lib"
-          
-          # // 拷贝头文件
           Copy-Item -Path "skia_source/skia/include" -Destination "dist/include" -Recurse
-          
-          # // 拷贝DLL文件到 bin/ 目录
           Get-ChildItem -Path "skia_source/skia/out/Release-x64" -Filter "*.dll" | Copy-Item -Destination "dist/bin"
-          
-          # // 拷贝LIB文件到 lib/ 目录
           Get-ChildItem -Path "skia_source/skia/out/Release-x64" -Filter "*.lib" | Copy-Item -Destination "dist/lib"
-        shell: pwsh
 
-      # // 步骤7: 生成 CMake 配置文件
-      # // 动态生成 CMakeLists.txt，用于提供开箱即用的 find_package 支持
+      # // 步骤7: 生成 CMake 配置文件 (使用更稳健的 here-string 格式)
       - name: 'Generate CMakeLists.txt for Package'
-        run: |
-          $cmake_content = '# // CMake 最低版本要求\ncmake_minimum_required(VERSION 3.15)' +
-          '\n\n# // 项目名称\nproject(SkiaPrebuilt)' +
-          '\n\n# // 打印状态信息，告知用户 Skia 包已找到\nmessage(STATUS "Found pre-built Skia package")' +
-          '\n\n# // 定义 Skia::Skia 导入目标 (IMPORTED SHARED LIBRARY)\n# // 这是一个虚拟目标，代表了预编译的 Skia 库\nadd_library(Skia::Skia SHARED IMPORTED GLOBAL)' +
-          '\n\n# // 设置目标属性\nset_target_properties(Skia::Skia PROPERTIES\n# // 指定头文件目录\nINTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/include"' +
-          '\n\n# // 指定 DLL 文件的位置 (用于运行时)\nIMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/bin/skia.dll"' +
-          '\n\n# // 指定导入库文件的位置 (用于链接)\nIMPORTED_IMPLIB "${CMAKE_CURRENT_LIST_DIR}/lib/skia.lib"' +
-          '\n\n# // 指定需要链接的其他 Skia 模块库和平台相关的图形API库\n# // 这样用户链接 Skia::Skia 时，会自动链接这些依赖\nINTERFACE_LINK_LIBRARIES "\n${CMAKE_CURRENT_LIST_DIR}/lib/skshaper.lib;\n${CMAKE_CURRENT_LIST_DIR}/lib/skparagraph.lib;\nopengl32;\nd3d11;\ndxgi;\ndxguid\n"\n)'
-          $cmake_content | Out-File -FilePath "dist/CMakeLists.txt" -Encoding utf8
         shell: pwsh
+        run: |
+          $cmake_content = @"
+# // CMake 最低版本要求
+cmake_minimum_required(VERSION 3.15)
+
+# // 项目名称
+project(SkiaPrebuilt)
+
+# // 打印状态信息，告知用户 Skia 包已找到
+message(STATUS "Found pre-built Skia package")
+
+# // 定义 Skia::Skia 导入目标 (IMPORTED SHARED LIBRARY)
+# // 这是一个虚拟目标，代表了预编译的 Skia 库
+add_library(Skia::Skia SHARED IMPORTED GLOBAL)
+
+# // 设置目标属性
+set_target_properties(Skia::Skia PROPERTIES
+    # // 指定头文件目录
+    INTERFACE_INCLUDE_DIRECTORIES "\${CMAKE_CURRENT_LIST_DIR}/include"
+
+    # // 指定 DLL 文件的位置 (用于运行时)
+    IMPORTED_LOCATION "\${CMAKE_CURRENT_LIST_DIR}/bin/skia.dll"
+    
+    # // 指定导入库文件的位置 (用于链接)
+    IMPORTED_IMPLIB "\${CMAKE_CURRENT_LIST_DIR}/lib/skia.lib"
+    
+    # // 指定需要链接的其他 Skia 模块库和平台相关的图形API库
+    # // 这样用户链接 Skia::Skia 时，会自动链接这些依赖
+    INTERFACE_LINK_LIBRARIES "
+        \${CMAKE_CURRENT_LIST_DIR}/lib/skshaper.lib;
+        \${CMAKE_CURRENT_LIST_DIR}/lib/skparagraph.lib;
+        opengl32;
+        d3d11;
+        dxgi;
+        dxguid
+    "
+)
+"@
+          $cmake_content | Out-File -FilePath "dist/CMakeLists.txt" -Encoding utf8
 
       # // 步骤8: 将产物打包成 ZIP 文件
       - name: 'Create ZIP Archive'
@@ -121,18 +157,12 @@ jobs:
         shell: pwsh
 
       # // 步骤9: 创建 GitHub Release 并上传 ZIP 文件
-      # // 使用 action-gh-release 插件来自动化发布流程
       - name: 'Create GitHub Release and Upload Artifact'
         uses: softprops/action-gh-release@v2
         with:
-          # // 自动将生成的 ZIP 文件添加到 Release
           files: win-x64.zip
-          # // 使用日期和运行ID创建一个唯一的标签
           tag_name: skia-build-${{ env.TODAY }}-${{ github.run_number }}
-          # // 将此版本标记为预发布
           prerelease: true
         env:
-          # // 设置日期变量，用于 release 标签
           TODAY: $(Get-Date -Format 'yyyy-MM-dd')
-          # // GitHub Token 是创建 Release 所必需的
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
