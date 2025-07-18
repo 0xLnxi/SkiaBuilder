@@ -1,29 +1,29 @@
 # .github/workflows/build-skia.yml
 
-# // 工作流名称
+# 工作流名称
 name: 'Weekly Skia Build (Windows)'
 
-# // 工作流触发器
+# 工作流触发器
 on:
-  # // 允许手动从 Actions 页面触发此工作流
+  # 允许手动从 Actions 页面触发此工作流
   workflow_dispatch:
-  # // 设置定时任务，每周日凌晨3点执行 (UTC时间)
+  # 设置定时任务，每周日凌晨3点执行 (UTC时间)
   schedule:
     - cron: '0 3 * * 0'
 
-# // 定义工作流中的任务
+# 定义工作流中的任务
 jobs:
   build-skia-windows:
-    # // 指定任务运行的环境
+    # 指定任务运行的环境
     runs-on: windows-latest
 
-    # // 任务步骤
+    # 任务步骤
     steps:
-      # // 步骤1: 检出代码
+      # 步骤1: 检出代码
       - name: 'Checkout Repository'
         uses: actions/checkout@v4
 
-      # // 步骤2: 安装 Google Depot Tools (带重试逻辑)
+      # 步骤2: 安装 Google Depot Tools (带重试逻辑)
       - name: 'Install Google Depot Tools'
         run: |
           $max_retries = 5
@@ -45,18 +45,19 @@ jobs:
           exit 1
         shell: pwsh
 
-      # // 步骤3: 拉取 Skia 源码
+      # 步骤3: 拉取 Skia 源码
       - name: 'Fetch Skia Source Code'
         run: |
           mkdir skia_source && cd skia_source
           fetch skia
         shell: cmd
 
-      # // 步骤4: 生成构建配置 (GN)
+      # 步骤4: 生成构建配置 (GN) (已更新为 C++20)
       - name: 'Generate Build Files (GN)'
         working-directory: ./skia_source/skia
         run: |
-          # // 定义 GN 参数
+          # 定义 GN 参数
+          # [重要] extra_cflags 已设置为强制使用 C++20 标准
           $gn_args = @(
             'is_official_build=true',
             'skia_enable_wasm=false',
@@ -66,22 +67,22 @@ jobs:
             'skia_use_gl=true',
             'skia_use_d3d=true',
             'skia_enable_shared_libs=true',
-            'skia_build_for_wincodec=true'
+            'skia_build_for_wincodec=true',
+            'extra_cflags=[\"/std:c++20\"]'
           ) -join ' '
           
           python tools/git-sync-deps
           gn gen out/Release-x64 --args="$gn_args"
         shell: pwsh
 
-      # // 步骤5: 编译 Skia (已更新)
-      # // [重要] 已从此处的命令中移除 "dawn" 目标
+      # 步骤5: 编译 Skia
       - name: 'Compile Skia with Ninja'
         working-directory: ./skia_source/skia
         run: |
           ninja -C out/Release-x64 skia skshaper skparagraph
         shell: cmd
 
-      # // 步骤6: 准备打包文件 (Staging)
+      # 步骤6: 准备打包文件 (Staging)
       - name: 'Stage Artifacts'
         run: |
           New-Item -ItemType Directory -Path "dist/bin"
@@ -91,18 +92,18 @@ jobs:
           Get-ChildItem -Path "skia_source/skia/out/Release-x64" -Filter "*.lib" | Copy-Item -Destination "dist/lib"
         shell: pwsh
 
-      # // 步骤7: 生成 CMake 配置文件
+      # 步骤7: 生成 CMake 配置文件
       - name: 'Generate CMakeLists.txt for Package'
         run: |
-          $cmake_content = "# // CMake 最低版本要求`n" +
+          $cmake_content = "# CMake 最低版本要求`n" +
                            "cmake_minimum_required(VERSION 3.15)`n`n" +
-                           "# // 项目名称`n" +
+                           "# 项目名称`n" +
                            "project(SkiaPrebuilt)`n`n" +
-                           "# // 打印状态信息，告知用户 Skia 包已找到`n" +
+                           "# 打印状态信息，告知用户 Skia 包已找到`n" +
                            "message(STATUS `"Found pre-built Skia package`")`n`n" +
-                           "# // 定义 Skia::Skia 导入目标 (IMPORTED SHARED LIBRARY)`n" +
+                           "# 定义 Skia::Skia 导入目标 (IMPORTED SHARED LIBRARY)`n" +
                            "add_library(Skia::Skia SHARED IMPORTED GLOBAL)`n`n" +
-                           "# // 设置目标属性`n" +
+                           "# 设置目标属性`n" +
                            "set_target_properties(Skia::Skia PROPERTIES`n" +
                            "    INTERFACE_INCLUDE_DIRECTORIES `"`${CMAKE_CURRENT_LIST_DIR}/include`"`n`n" +
                            "    IMPORTED_LOCATION `"`${CMAKE_CURRENT_LIST_DIR}/bin/skia.dll`"`n`n" +
@@ -119,12 +120,12 @@ jobs:
           $cmake_content | Out-File -FilePath "dist/CMakeLists.txt" -Encoding utf8
         shell: pwsh
 
-      # // 步骤8: 将产物打包成 ZIP 文件
+      # 步骤8: 将产物打包成 ZIP 文件
       - name: 'Create ZIP Archive'
         run: Compress-Archive -Path dist/* -DestinationPath win-x64.zip
         shell: pwsh
 
-      # // 步骤9: 创建 GitHub Release 并上传 ZIP 文件
+      # 步骤9: 创建 GitHub Release 并上传 ZIP 文件
       - name: 'Create GitHub Release and Upload Artifact'
         uses: softprops/action-gh-release@v2
         with:
