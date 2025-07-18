@@ -19,55 +19,46 @@ jobs:
 
     # // 任务步骤
     steps:
-      # // 步骤1: 检出代码 (虽然此工作流不直接使用仓库代码，但这是个好习惯)
+      # // 步骤1: 检出代码
       - name: 'Checkout Repository'
         uses: actions/checkout@v4
 
-      # // 步骤2: 安装 Google Depot Tools (已增加重试逻辑)
-      # // Depot Tools 是构建 Skia 及其依赖项所必需的工具集
+      # // 步骤2: 安装 Google Depot Tools (带重试逻辑)
       - name: 'Install Google Depot Tools'
         run: |
           $max_retries = 5
           $delay_seconds = 15
           for ($attempt = 1; $attempt -le $max_retries; $attempt++) {
             Write-Host "Attempting to clone depot_tools (Attempt $attempt/$max_retries)..."
-            # // 执行 git clone 命令
             git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-            # // 检查上一条命令的退出代码
             if ($LASTEXITCODE -eq 0) {
               Write-Host "Cloned depot_tools successfully."
-              # // 将 depot_tools 添加到 PATH
               echo "$PWD/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              return # // 成功则退出脚本
+              return
             }
             if ($attempt -lt $max_retries) {
               Write-Host "Clone failed. Retrying in $delay_seconds seconds..."
               Start-Sleep -Seconds $delay_seconds
             }
           }
-          # // 如果所有尝试都失败，则记录错误并退出
           Write-Error "Failed to clone depot_tools after $max_retries attempts."
           exit 1
         shell: pwsh
 
       # // 步骤3: 拉取 Skia 源码
-      # // 使用 depot_tools 中的 fetch 工具拉取 Skia 及其所有依赖
       - name: 'Fetch Skia Source Code'
         run: |
-          # // 创建一个目录用于存放 Skia 源码
           mkdir skia_source && cd skia_source
-          # // 执行 fetch，会自动处理 gclient sync
           fetch skia
         shell: cmd
 
-      # // 步骤4: 生成构建配置 (GN)
-      # // 使用 GN (Generate Ninja) 工具创建 Ninja 构建文件
-      # // 这是最关键的一步，我们在这里配置所有编译选项
+      # // 步骤4: 生成构建配置 (GN) (已更新参数)
       - name: 'Generate Build Files (GN)'
         working-directory: ./skia_source/skia
         run: |
           # // 定义 GN 参数
           # // is_official_build=true       - 启用优化，相当于Release模式
+          # // skia_enable_wasm=false       - [重要] 显式禁用WebAssembly，避免emsdk依赖问题
           # // skia_use_dawn=true           - 启用 DAWN 后端，这是 Graphite 的核心
           # // skia_enable_graphite=true    - 启用 Graphite 渲染管线
           # // skia_use_ganesh=true         - 启用 Ganesh 渲染管线
@@ -75,17 +66,17 @@ jobs:
           # // skia_use_d3d=true            - 为 Ganesh 启用 Direct3D 后端
           # // skia_enable_shared_libs=true - 构建为共享库 (DLL)
           # // skia_build_for_wincodec=true - 在Windows上启用WIC编解码器支持
-          # // extra_cflags=["/MT"]         - 使用静态链接的C++运行时库，避免用户缺少VC++ distributable的问题
+          # // 备注: 暂时移除了 extra_cflags=["/MT"] 以解决gn语法错误。将默认使用动态运行时(/MD)。
           $gn_args = @(
             'is_official_build=true',
+            'skia_enable_wasm=false',
             'skia_use_dawn=true',
             'skia_enable_graphite=true',
             'skia_use_ganesh=true',
             'skia_use_gl=true',
             'skia_use_d3d=true',
             'skia_enable_shared_libs=true',
-            'skia_build_for_wincodec=true',
-            'extra_cflags=["/MT"]'
+            'skia_build_for_wincodec=true'
           ) -join ' '
           
           # // 执行 gn gen 命令
@@ -94,7 +85,6 @@ jobs:
         shell: pwsh
 
       # // 步骤5: 编译 Skia
-      # // 使用 Ninja 工具根据生成的配置进行高速并行编译
       - name: 'Compile Skia with Ninja'
         working-directory: ./skia_source/skia
         run: |
@@ -102,25 +92,16 @@ jobs:
         shell: cmd
 
       # // 步骤6: 准备打包文件 (Staging)
-      # // 创建一个临时目录，并将所有需要的文件按指定结构整理好
       - name: 'Stage Artifacts'
         run: |
-          # // 创建目标目录结构
           New-Item -ItemType Directory -Path "dist/bin"
           New-Item -ItemType Directory -Path "dist/lib"
-          
-          # // 拷贝头文件
           Copy-Item -Path "skia_source/skia/include" -Destination "dist/include" -Recurse
-          
-          # // 拷贝DLL文件到 bin/ 目录
           Get-ChildItem -Path "skia_source/skia/out/Release-x64" -Filter "*.dll" | Copy-Item -Destination "dist/bin"
-          
-          # // 拷贝LIB文件到 lib/ 目录
           Get-ChildItem -Path "skia_source/skia/out/Release-x64" -Filter "*.lib" | Copy-Item -Destination "dist/lib"
         shell: pwsh
 
-      # // 步骤7: 生成 CMake 配置文件 (已修改为字符串拼接)
-      # // 动态生成 CMakeLists.txt，用于提供开箱即用的 find_package 支持
+      # // 步骤7: 生成 CMake 配置文件
       - name: 'Generate CMakeLists.txt for Package'
         run: |
           $cmake_content = "# // CMake 最低版本要求`n" +
@@ -130,18 +111,12 @@ jobs:
                            "# // 打印状态信息，告知用户 Skia 包已找到`n" +
                            "message(STATUS `"Found pre-built Skia package`")`n`n" +
                            "# // 定义 Skia::Skia 导入目标 (IMPORTED SHARED LIBRARY)`n" +
-                           "# // 这是一个虚拟目标，代表了预编译的 Skia 库`n" +
                            "add_library(Skia::Skia SHARED IMPORTED GLOBAL)`n`n" +
                            "# // 设置目标属性`n" +
                            "set_target_properties(Skia::Skia PROPERTIES`n" +
-                           "    # // 指定头文件目录`n" +
                            "    INTERFACE_INCLUDE_DIRECTORIES `"`${CMAKE_CURRENT_LIST_DIR}/include`"`n`n" +
-                           "    # // 指定 DLL 文件的位置 (用于运行时)`n" +
                            "    IMPORTED_LOCATION `"`${CMAKE_CURRENT_LIST_DIR}/bin/skia.dll`"`n`n" +
-                           "    # // 指定导入库文件的位置 (用于链接)`n" +
                            "    IMPORTED_IMPLIB `"`${CMAKE_CURRENT_LIST_DIR}/lib/skia.lib`"`n`n" +
-                           "    # // 指定需要链接的其他 Skia 模块库和平台相关的图形API库`n" +
-                           "    # // 这样用户链接 Skia::Skia 时，会自动链接这些依赖`n" +
                            '    INTERFACE_LINK_LIBRARIES "`n' +
                            "        `$<{CMAKE_CURRENT_LIST_DIR}/lib/skshaper.lib>;`n" +
                            "        `$<{CMAKE_CURRENT_LIST_DIR}/lib/skparagraph.lib>;`n" +
@@ -160,18 +135,12 @@ jobs:
         shell: pwsh
 
       # // 步骤9: 创建 GitHub Release 并上传 ZIP 文件
-      # // 使用 action-gh-release 插件来自动化发布流程
       - name: 'Create GitHub Release and Upload Artifact'
         uses: softprops/action-gh-release@v2
         with:
-          # // 自动将生成的 ZIP 文件添加到 Release
           files: win-x64.zip
-          # // 使用日期和运行ID创建一个唯一的标签
           tag_name: skia-build-${{ env.TODAY }}-${{ github.run_number }}
-          # // 将此版本标记为预发布
           prerelease: true
         env:
-          # // 设置日期变量，用于 release 标签
           TODAY: $(Get-Date -Format 'yyyy-MM-dd')
-          # // GitHub Token 是创建 Release 所必需的
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
