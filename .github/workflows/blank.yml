@@ -52,21 +52,11 @@ jobs:
           fetch skia
         shell: cmd
 
-      # // 步骤4: 生成构建配置 (GN) (已更新参数)
+      # // 步骤4: 生成构建配置 (GN)
       - name: 'Generate Build Files (GN)'
         working-directory: ./skia_source/skia
         run: |
           # // 定义 GN 参数
-          # // is_official_build=true       - 启用优化，相当于Release模式
-          # // skia_enable_wasm=false       - [重要] 显式禁用WebAssembly，避免emsdk依赖问题
-          # // skia_use_dawn=true           - 启用 DAWN 后端，这是 Graphite 的核心
-          # // skia_enable_graphite=true    - 启用 Graphite 渲染管线
-          # // skia_use_ganesh=true         - 启用 Ganesh 渲染管线
-          # // skia_use_gl=true             - 为 Ganesh 启用 OpenGL 后端
-          # // skia_use_d3d=true            - 为 Ganesh 启用 Direct3D 后端
-          # // skia_enable_shared_libs=true - 构建为共享库 (DLL)
-          # // skia_build_for_wincodec=true - 在Windows上启用WIC编解码器支持
-          # // 备注: 暂时移除了 extra_cflags=["/MT"] 以解决gn语法错误。将默认使用动态运行时(/MD)。
           $gn_args = @(
             'is_official_build=true',
             'skia_enable_wasm=false',
@@ -79,16 +69,16 @@ jobs:
             'skia_build_for_wincodec=true'
           ) -join ' '
           
-          # // 执行 gn gen 命令
           python tools/git-sync-deps
           gn gen out/Release-x64 --args="$gn_args"
         shell: pwsh
 
-      # // 步骤5: 编译 Skia
+      # // 步骤5: 编译 Skia (已更新)
+      # // [重要] 已从此处的命令中移除 "dawn" 目标
       - name: 'Compile Skia with Ninja'
         working-directory: ./skia_source/skia
         run: |
-          ninja -C out/Release-x64 skia skshaper skparagraph dawn
+          ninja -C out/Release-x64 skia skshaper skparagraph
         shell: cmd
 
       # // 步骤6: 准备打包文件 (Staging)
