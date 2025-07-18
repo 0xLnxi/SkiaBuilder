@@ -23,63 +23,42 @@ jobs:
           python-version: '3.x'
 
       - name: 'Install depot_tools'
+        # 将 depot_tools 克隆下来并添加到当前会话的 PATH 中
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
           $env:PATH = "$env:PATH;" + (Get-Item .).FullName + "\depot_tools"
           gclient
 
       - name: 'Fetch Skia Source'
+        # 克隆 Skia 源码并同步依赖
         run: |
           git clone https://skia.googlesource.com/skia.git
           cd skia
           python tools/git-sync-deps
 
       - name: 'Generate Build Files with GN'
-        # 为Skia生成构建文件
-        # is_official_build=true      - 启用优化并减少调试信息
-        # skia_use_system_libs=false  - 不使用系统提供的库, 而是使用Skia依赖项中的版本
-        # skia_use_dawn=true          - 启用Dawn后端 (用于Graphite)
-        # skia_use_gl=true            - 启用OpenGL后端 (用于Ganesh)
-        # skia_use_vulkan=true        - 启用Vulkan后端 (用于Ganesh和Graphite)
-        # skia_use_d3d=true           - 启用Direct3D后端 (用于Ganesh)
-        # skia_enable_ganesh_backend=true - 启用Ganesh渲染后端
-        # skia_enable_graphite_backend=true - 启用Graphite渲染后端
-        # extra_cflags_cc=["/std:c++20"] - 设置C++编译器标志以使用C++20标准
-        # target_cpu="x64"            - 目标CPU架构
-        # target_os="win"             - 目标操作系统
-        shell: cmd
+        # 【已修正】
+        # 移除了错误的 skia_gm.py 调用。
+        # 将所有 --args 参数合并到一行，以避免 shell 的语法解析问题。
+        # gn 命令可以直接调用，因为它存在于 depot_tools 中，而 depot_tools 已经在 PATH 里。
         working-directory: ./skia
-        run: |
-          python ./tools/skia_gm.py
-          bin/gn gen out/Release-x64 --args="is_official_build=true " +
-                                            "skia_use_system_libs=false " +
-                                            "skia_use_dawn=true " +
-                                            "skia_use_gl=true " +
-                                            "skia_use_vulkan=true " +
-                                            "skia_use_d3d=true " +
-                                            "skia_enable_ganesh_backend=true " +
-                                            "skia_enable_graphite_backend=true " +
-                                            "extra_cflags_cc=[\"/std:c++20\"] " +
-                                            "target_cpu=\"x64\" " +
-                                            "target_os=\"win\""
+        run: >
+          gn gen out/Release-x64 --args="is_official_build=true skia_use_system_libs=false skia_use_dawn=true skia_use_gl=true skia_use_vulkan=true skia_use_d3d=true skia_enable_ganesh_backend=true skia_enable_graphite_backend=true extra_cflags_cc=[\"/std:c++20\"] target_cpu=\"x64\" target_os=\"win\""
 
       - name: 'Compile Skia'
+        # 使用 ninja 进行编译，-C 指定构建目录
         shell: cmd
         working-directory: ./skia
         run: |
           ninja -C out/Release-x64
 
       - name: 'Prepare Artifacts'
-        # 准备要打包的文件
+        # 创建临时目录并复制所需的文件
         run: |
           mkdir -p staging/include
           mkdir -p staging/lib/win-x64
           mkdir -p staging/bin/win-x64
-
-          # 复制头文件
           cp -r skia/include/* staging/include/
-
-          # 复制编译好的库文件
           cp skia/out/Release-x64/*.lib staging/lib/win-x64/
           cp skia/out/Release-x64/*.dll staging/bin/win-x64/
 
@@ -126,7 +105,7 @@ jobs:
           find_library(WEBGPU_SHARED_LIBRARY webgpu_shared HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
           find_library(ABSEIL_FLAGS_LIBRARY absl_flags_internal HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
           find_library(ABSEIL_BASE_LIBRARY absl_base HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
-          
+
           target_link_libraries(Skia::Skia INTERFACE
               "${SKIA_LIBRARY}"
               "${SKSHAPER_LIBRARY}"
