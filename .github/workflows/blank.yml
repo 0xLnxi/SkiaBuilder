@@ -13,7 +13,7 @@ on:
 
 # 为工作流定义环境变量，方便统一管理
 env:
-  # [重要] 已切换为构建 Skia 最新的 main 分支
+  # 构建 Skia 最新的 main 分支
   SKIA_BRANCH: 'main'
   # 定义 depot_tools 的安装目录
   DEPOT_TOOLS_DIR: '${{ github.workspace }}/depot_tools'
@@ -38,14 +38,21 @@ jobs:
           path: ${{ env.DEPOT_TOOLS_DIR }}
           key: depot-tools-${{ runner.os }}
 
-      # 步骤3: 安装并初始化 Google Depot Tools
+      # 步骤3: 安装并初始化 Google Depot Tools (已更新)
       - name: 'Install and Initialize Google Depot Tools'
         run: |
           if (-not (Test-Path ${{ env.DEPOT_TOOLS_DIR }})) {
             Write-Host "Depot tools not found in cache, cloning..."
             git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git ${{ env.DEPOT_TOOLS_DIR }}
           }
+          
+          # [关键修复] 将 depot_tools 目录添加到当前 PowerShell 会话的 PATH 环境变量
+          $env:PATH = "${{ env.DEPOT_TOOLS_DIR }};" + $env:PATH
+          
+          # 同时，也将其添加到 GITHUB_PATH 以便后续所有步骤都能使用
           echo "${{ env.DEPOT_TOOLS_DIR }}" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          
+          # 现在可以成功调用 gclient 来确保 depot_tools 被正确初始化
           gclient
         shell: pwsh
 
@@ -64,7 +71,7 @@ jobs:
           git checkout ${{ env.SKIA_BRANCH }}
           git pull
           
-          # [新增] 获取当前 Skia 的提交哈希，用于追溯
+          # 获取当前 Skia 的提交哈希，用于追溯
           $commit_hash = git rev-parse --short HEAD
           Write-Host "Current Skia commit hash is: $commit_hash"
           echo "SKIA_COMMIT_HASH=$commit_hash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -109,7 +116,6 @@ jobs:
           Copy-Item -Path "skia_source/include" -Destination "dist/include" -Recurse
           Get-ChildItem -Path "skia_source/out/Release-x64" -Filter "*.dll" | Copy-Item -Destination "dist/bin"
           Get-ChildItem -Path "skia_source/out/Release-x64" -Filter "*.lib" | Copy-Item -Destination "dist/lib"
-          # ... (生成 CMakeLists.txt 的代码，与之前相同)
           $cmake_content = "# CMake 最低版本要求`n" +
                            "cmake_minimum_required(VERSION 3.15)`n`n" +
                            "project(SkiaPrebuilt)`n`n" +
@@ -133,10 +139,8 @@ jobs:
       - name: 'Create GitHub Release and Upload Artifact'
         uses: softprops/action-gh-release@v2
         with:
-          # 在发布说明中也加入提交哈希
           body: "Automated Skia build from branch `${{ env.SKIA_BRANCH }}` at commit `${{ env.SKIA_COMMIT_HASH }}`."
           files: win-x64.zip
-          # 在标签中加入分支和提交哈希，确保唯一性和可追溯性
           tag_name: skia-build-${{ env.SKIA_BRANCH }}-${{ env.SKIA_COMMIT_HASH }}-${{ github.run_number }}
           prerelease: true
         env:
