@@ -11,6 +11,13 @@ on:
   schedule:
     - cron: '0 3 * * 0'
 
+# 为工作流定义环境变量，方便统一管理
+env:
+  # [重要] 已切换为构建 Skia 最新的 main 分支
+  SKIA_BRANCH: 'main'
+  # 定义 depot_tools 的安装目录
+  DEPOT_TOOLS_DIR: '${{ github.workspace }}/depot_tools'
+
 # 定义工作流中的任务
 jobs:
   build-skia-windows:
@@ -19,46 +26,50 @@ jobs:
 
     # 任务步骤
     steps:
-      # 步骤1: 检出代码
+      # 步骤1: 检出当前仓库的代码
       - name: 'Checkout Repository'
         uses: actions/checkout@v4
 
-      # 步骤2: 安装 Google Depot Tools (带重试逻辑)
-      - name: 'Install Google Depot Tools'
+      # 步骤2: 缓存 depot_tools
+      - name: 'Cache Depot Tools'
+        id: cache-depot-tools
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DEPOT_TOOLS_DIR }}
+          key: depot-tools-${{ runner.os }}
+
+      # 步骤3: 安装并初始化 Google Depot Tools
+      - name: 'Install and Initialize Google Depot Tools'
         run: |
-          $max_retries = 5
-          $delay_seconds = 15
-          for ($attempt = 1; $attempt -le $max_retries; $attempt++) {
-            Write-Host "Attempting to clone depot_tools (Attempt $attempt/$max_retries)..."
-            git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-            if ($LASTEXITCODE -eq 0) {
-              Write-Host "Cloned depot_tools successfully."
-              echo "$PWD/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              return
-            }
-            if ($attempt -lt $max_retries) {
-              Write-Host "Clone failed. Retrying in $delay_seconds seconds..."
-              Start-Sleep -Seconds $delay_seconds
-            }
+          if (-not (Test-Path ${{ env.DEPOT_TOOLS_DIR }})) {
+            Write-Host "Depot tools not found in cache, cloning..."
+            git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git ${{ env.DEPOT_TOOLS_DIR }}
           }
-          Write-Error "Failed to clone depot_tools after $max_retries attempts."
-          exit 1
+          echo "${{ env.DEPOT_TOOLS_DIR }}" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          gclient
         shell: pwsh
 
-      # 步骤3: 拉取 Skia 并生成构建配置 (已更新)
-      - name: 'Fetch Skia and Generate Build Files'
+      # 步骤4: 拉取 Skia 源码并生成配置
+      - name: 'Fetch Skia Source and Generate Build Config'
         run: |
-          # 设置要构建的稳定分支
-          $skia_branch = "chrome/m126"
+          if (-not (Test-Path skia_source/.git)) {
+            Write-Host "Cloning Skia repository..."
+            git clone https://skia.googlesource.com/skia.git skia_source
+          }
           
-          # 克隆skia仓库
-          git clone https://skia.googlesource.com/skia.git skia_source
           cd skia_source
           
-          # 检出稳定分支
-          git checkout $skia_branch
+          Write-Host "Checking out latest from branch: ${{ env.SKIA_BRANCH }}"
+          git fetch
+          git checkout ${{ env.SKIA_BRANCH }}
+          git pull
+          
+          # [新增] 获取当前 Skia 的提交哈希，用于追溯
+          $commit_hash = git rev-parse --short HEAD
+          Write-Host "Current Skia commit hash is: $commit_hash"
+          echo "SKIA_COMMIT_HASH=$commit_hash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          # 定义 GN 参数
+          # 定义 GN 参数 (不强制指定C++版本，使用main分支的默认值)
           $gn_args = @(
             'is_official_build=true',
             'skia_enable_wasm=false',
@@ -71,75 +82,62 @@ jobs:
             'skia_build_for_wincodec=true'
           ) -join ' '
 
-          # [重要] 先运行 gn gen 创建构建配置
+          Write-Host "Generating build files with args: $gn_args"
           gn gen out/Release-x64 --args="$gn_args"
         shell: pwsh
       
-      # 步骤4: 同步依赖项 (已更新)
-      - name: 'Sync Dependencies'
+      # 步骤5: 同步 Skia 依赖项
+      - name: 'Sync Skia Dependencies'
         working-directory: ./skia_source
         run: |
-          # [重要] 现在再运行依赖同步，它会读取上一步的配置
+          Write-Host "Syncing dependencies based on generated config..."
           python tools/git-sync-deps
         shell: pwsh
 
-      # 步骤5: 编译 Skia
+      # 步骤6: 编译 Skia
       - name: 'Compile Skia with Ninja'
         working-directory: ./skia_source
         run: |
           ninja -C out/Release-x64 skia skshaper skparagraph
         shell: cmd
 
-      # 步骤6: 准备打包文件 (Staging)
-      - name: 'Stage Artifacts'
+      # 步骤7: 准备并打包产物
+      - name: 'Stage and Package Artifacts'
         run: |
           New-Item -ItemType Directory -Path "dist/bin"
           New-Item -ItemType Directory -Path "dist/lib"
           Copy-Item -Path "skia_source/include" -Destination "dist/include" -Recurse
           Get-ChildItem -Path "skia_source/out/Release-x64" -Filter "*.dll" | Copy-Item -Destination "dist/bin"
           Get-ChildItem -Path "skia_source/out/Release-x64" -Filter "*.lib" | Copy-Item -Destination "dist/lib"
-        shell: pwsh
-
-      # 步骤7: 生成 CMake 配置文件
-      - name: 'Generate CMakeLists.txt for Package'
-        run: |
+          # ... (生成 CMakeLists.txt 的代码，与之前相同)
           $cmake_content = "# CMake 最低版本要求`n" +
                            "cmake_minimum_required(VERSION 3.15)`n`n" +
-                           "# 项目名称`n" +
                            "project(SkiaPrebuilt)`n`n" +
-                           "# 打印状态信息，告知用户 Skia 包已找到`n" +
                            "message(STATUS `"Found pre-built Skia package`")`n`n" +
-                           "# 定义 Skia::Skia 导入目标 (IMPORTED SHARED LIBRARY)`n" +
                            "add_library(Skia::Skia SHARED IMPORTED GLOBAL)`n`n" +
-                           "# 设置目标属性`n" +
                            "set_target_properties(Skia::Skia PROPERTIES`n" +
-                           "    INTERFACE_INCLUDE_DIRECTORIES `"`${CMAKE_CURRENT_LIST_DIR}/include`"`n`n" +
-                           "    IMPORTED_LOCATION `"`${CMAKE_CURRENT_LIST_DIR}/bin/skia.dll`"`n`n" +
-                           "    IMPORTED_IMPLIB `"`${CMAKE_CURRENT_LIST_DIR}/lib/skia.lib`"`n`n" +
+                           "    INTERFACE_INCLUDE_DIRECTORIES `"`${CMAKE_CURRENT_LIST_DIR}/include`"`n" +
+                           "    IMPORTED_LOCATION `"`${CMAKE_CURRENT_LIST_DIR}/bin/skia.dll`"`n" +
+                           "    IMPORTED_IMPLIB `"`${CMAKE_CURRENT_LIST_DIR}/lib/skia.lib`"`n" +
                            '    INTERFACE_LINK_LIBRARIES "`n' +
                            "        `$<{CMAKE_CURRENT_LIST_DIR}/lib/skshaper.lib>;`n" +
                            "        `$<{CMAKE_CURRENT_LIST_DIR}/lib/skparagraph.lib>;`n" +
-                           "        opengl32;`n" +
-                           "        d3d11;`n" +
-                           "        dxgi;`n" +
-                           "        dxguid`n" +
+                           "        opengl32;d3d11;dxgi;dxguid`n" +
                            '    "`n' +
                            ")"
           $cmake_content | Out-File -FilePath "dist/CMakeLists.txt" -Encoding utf8
+          Compress-Archive -Path dist/* -DestinationPath win-x64.zip
         shell: pwsh
 
-      # 步骤8: 将产物打包成 ZIP 文件
-      - name: 'Create ZIP Archive'
-        run: Compress-Archive -Path dist/* -DestinationPath win-x64.zip
-        shell: pwsh
-
-      # 步骤9: 创建 GitHub Release 并上传 ZIP 文件
+      # 步骤8: 创建 GitHub Release 并上传
       - name: 'Create GitHub Release and Upload Artifact'
         uses: softprops/action-gh-release@v2
         with:
+          # 在发布说明中也加入提交哈希
+          body: "Automated Skia build from branch `${{ env.SKIA_BRANCH }}` at commit `${{ env.SKIA_COMMIT_HASH }}`."
           files: win-x64.zip
-          tag_name: skia-build-${{ env.TODAY }}-${{ github.run_number }}
+          # 在标签中加入分支和提交哈希，确保唯一性和可追溯性
+          tag_name: skia-build-${{ env.SKIA_BRANCH }}-${{ env.SKIA_COMMIT_HASH }}-${{ github.run_number }}
           prerelease: true
         env:
-          TODAY: $(Get-Date -Format 'yyyy-MM-dd')
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
