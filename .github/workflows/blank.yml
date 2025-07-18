@@ -1,147 +1,182 @@
 # .github/workflows/build-skia.yml
 
-# 工作流名称
-name: 'Weekly Skia Build (Windows)'
+name: 'Weekly Build Skia (Graphite + Ganesh)'
 
-# 工作流触发器
 on:
-  # 允许手动从 Actions 页面触发此工作流
-  workflow_dispatch:
-  # 设置定时任务，每周日凌晨3点执行 (UTC时间)
+  # 每周日凌晨3点触发
   schedule:
     - cron: '0 3 * * 0'
+  # 允许手动触发
+  workflow_dispatch:
 
-# 为工作流定义环境变量，方便统一管理
-env:
-  # 构建 Skia 最新的 main 分支
-  SKIA_BRANCH: 'main'
-  # 定义 depot_tools 的安装目录
-  DEPOT_TOOLS_DIR: '${{ github.workspace }}/depot_tools'
-
-# 定义工作流中的任务
 jobs:
-  build-skia-windows:
-    # 指定任务运行的环境
+  build:
     runs-on: windows-latest
 
-    # 任务步骤
     steps:
-      # 步骤1: 检出当前仓库的代码
-      - name: 'Checkout Repository'
+      - name: 'Checkout Code'
         uses: actions/checkout@v4
 
-      # 步骤2: 缓存 depot_tools
-      - name: 'Cache Depot Tools'
-        id: cache-depot-tools
-        uses: actions/cache@v4
+      - name: 'Set up Python'
+        uses: actions/setup-python@v5
         with:
-          path: ${{ env.DEPOT_TOOLS_DIR }}
-          key: depot-tools-${{ runner.os }}
+          python-version: '3.x'
 
-      # 步骤3: 安装并初始化 Google Depot Tools (已更新)
-      - name: 'Install and Initialize Google Depot Tools'
+      - name: 'Install depot_tools'
         run: |
-          if (-not (Test-Path ${{ env.DEPOT_TOOLS_DIR }})) {
-            Write-Host "Depot tools not found in cache, cloning..."
-            git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git ${{ env.DEPOT_TOOLS_DIR }}
-          }
-          
-          # [关键修复] 将 depot_tools 目录添加到当前 PowerShell 会话的 PATH 环境变量
-          $env:PATH = "${{ env.DEPOT_TOOLS_DIR }};" + $env:PATH
-          
-          # 同时，也将其添加到 GITHUB_PATH 以便后续所有步骤都能使用
-          echo "${{ env.DEPOT_TOOLS_DIR }}" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          
-          # 现在可以成功调用 gclient 来确保 depot_tools 被正确初始化
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          $env:PATH = "$env:PATH;" + (Get-Item .).FullName + "\depot_tools"
           gclient
-        shell: pwsh
 
-      # 步骤4: 拉取 Skia 源码并生成配置
-      - name: 'Fetch Skia Source and Generate Build Config'
+      - name: 'Fetch Skia Source'
         run: |
-          if (-not (Test-Path skia_source/.git)) {
-            Write-Host "Cloning Skia repository..."
-            git clone https://skia.googlesource.com/skia.git skia_source
-          }
-          
-          cd skia_source
-          
-          Write-Host "Checking out latest from branch: ${{ env.SKIA_BRANCH }}"
-          git fetch
-          git checkout ${{ env.SKIA_BRANCH }}
-          git pull
-          
-          # 获取当前 Skia 的提交哈希，用于追溯
-          $commit_hash = git rev-parse --short HEAD
-          Write-Host "Current Skia commit hash is: $commit_hash"
-          echo "SKIA_COMMIT_HASH=$commit_hash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          # 定义 GN 参数 (不强制指定C++版本，使用main分支的默认值)
-          $gn_args = @(
-            'is_official_build=true',
-            'skia_enable_wasm=false',
-            'skia_use_dawn=true',
-            'skia_enable_graphite=true',
-            'skia_use_ganesh=true',
-            'skia_use_gl=true',
-            'skia_use_d3d=true',
-            'skia_enable_shared_libs=true',
-            'skia_build_for_wincodec=true'
-          ) -join ' '
-
-          Write-Host "Generating build files with args: $gn_args"
-          gn gen out/Release-x64 --args="$gn_args"
-        shell: pwsh
-      
-      # 步骤5: 同步 Skia 依赖项
-      - name: 'Sync Skia Dependencies'
-        working-directory: ./skia_source
-        run: |
-          Write-Host "Syncing dependencies based on generated config..."
+          git clone https://skia.googlesource.com/skia.git
+          cd skia
           python tools/git-sync-deps
-        shell: pwsh
 
-      # 步骤6: 编译 Skia
-      - name: 'Compile Skia with Ninja'
-        working-directory: ./skia_source
-        run: |
-          ninja -C out/Release-x64 skia skshaper skparagraph
+      - name: 'Generate Build Files with GN'
+        # 为Skia生成构建文件
+        # is_official_build=true      - 启用优化并减少调试信息
+        # skia_use_system_libs=false  - 不使用系统提供的库, 而是使用Skia依赖项中的版本
+        # skia_use_dawn=true          - 启用Dawn后端 (用于Graphite)
+        # skia_use_gl=true            - 启用OpenGL后端 (用于Ganesh)
+        # skia_use_vulkan=true        - 启用Vulkan后端 (用于Ganesh和Graphite)
+        # skia_use_d3d=true           - 启用Direct3D后端 (用于Ganesh)
+        # skia_enable_ganesh_backend=true - 启用Ganesh渲染后端
+        # skia_enable_graphite_backend=true - 启用Graphite渲染后端
+        # extra_cflags_cc=["/std:c++20"] - 设置C++编译器标志以使用C++20标准
+        # target_cpu="x64"            - 目标CPU架构
+        # target_os="win"             - 目标操作系统
         shell: cmd
-
-      # 步骤7: 准备并打包产物
-      - name: 'Stage and Package Artifacts'
+        working-directory: ./skia
         run: |
-          New-Item -ItemType Directory -Path "dist/bin"
-          New-Item -ItemType Directory -Path "dist/lib"
-          Copy-Item -Path "skia_source/include" -Destination "dist/include" -Recurse
-          Get-ChildItem -Path "skia_source/out/Release-x64" -Filter "*.dll" | Copy-Item -Destination "dist/bin"
-          Get-ChildItem -Path "skia_source/out/Release-x64" -Filter "*.lib" | Copy-Item -Destination "dist/lib"
-          $cmake_content = "# CMake 最低版本要求`n" +
-                           "cmake_minimum_required(VERSION 3.15)`n`n" +
-                           "project(SkiaPrebuilt)`n`n" +
-                           "message(STATUS `"Found pre-built Skia package`")`n`n" +
-                           "add_library(Skia::Skia SHARED IMPORTED GLOBAL)`n`n" +
-                           "set_target_properties(Skia::Skia PROPERTIES`n" +
-                           "    INTERFACE_INCLUDE_DIRECTORIES `"`${CMAKE_CURRENT_LIST_DIR}/include`"`n" +
-                           "    IMPORTED_LOCATION `"`${CMAKE_CURRENT_LIST_DIR}/bin/skia.dll`"`n" +
-                           "    IMPORTED_IMPLIB `"`${CMAKE_CURRENT_LIST_DIR}/lib/skia.lib`"`n" +
-                           '    INTERFACE_LINK_LIBRARIES "`n' +
-                           "        `$<{CMAKE_CURRENT_LIST_DIR}/lib/skshaper.lib>;`n" +
-                           "        `$<{CMAKE_CURRENT_LIST_DIR}/lib/skparagraph.lib>;`n" +
-                           "        opengl32;d3d11;dxgi;dxguid`n" +
-                           '    "`n' +
-                           ")"
-          $cmake_content | Out-File -FilePath "dist/CMakeLists.txt" -Encoding utf8
-          Compress-Archive -Path dist/* -DestinationPath win-x64.zip
-        shell: pwsh
+          python ./tools/skia_gm.py
+          bin/gn gen out/Release-x64 --args="is_official_build=true " +
+                                            "skia_use_system_libs=false " +
+                                            "skia_use_dawn=true " +
+                                            "skia_use_gl=true " +
+                                            "skia_use_vulkan=true " +
+                                            "skia_use_d3d=true " +
+                                            "skia_enable_ganesh_backend=true " +
+                                            "skia_enable_graphite_backend=true " +
+                                            "extra_cflags_cc=[\"/std:c++20\"] " +
+                                            "target_cpu=\"x64\" " +
+                                            "target_os=\"win\""
 
-      # 步骤8: 创建 GitHub Release 并上传
-      - name: 'Create GitHub Release and Upload Artifact'
-        uses: softprops/action-gh-release@v2
+      - name: 'Compile Skia'
+        shell: cmd
+        working-directory: ./skia
+        run: |
+          ninja -C out/Release-x64
+
+      - name: 'Prepare Artifacts'
+        # 准备要打包的文件
+        run: |
+          mkdir -p staging/include
+          mkdir -p staging/lib/win-x64
+          mkdir -p staging/bin/win-x64
+
+          # 复制头文件
+          cp -r skia/include/* staging/include/
+
+          # 复制编译好的库文件
+          cp skia/out/Release-x64/*.lib staging/lib/win-x64/
+          cp skia/out/Release-x64/*.dll staging/bin/win-x64/
+
+      - name: 'Create CMakeLists.txt'
+        # 创建一个 CMakeLists.txt 以便轻松地在其他项目中使用
+        run: |
+          Add-Content -Path staging/CMakeLists.txt -Value @'
+          cmake_minimum_required(VERSION 3.16)
+          project(Skia)
+
+          # --- Skia Interface Library ---
+          add_library(Skia::Skia INTERFACE)
+
+          # --- Include Directories ---
+          target_include_directories(Skia::Skia INTERFACE
+              "${CMAKE_CURRENT_SOURCE_DIR}/include"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/c"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/codec"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/config"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/core"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/docs"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/effects"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/encode"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/gpu"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/pathops"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/ports"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/private"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/svg"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/utils"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/android"
+              # Graphite & Backends
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/gpu/graphite"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/gpu/graphite/dawn"
+              "${CMAKE_CURRENT_SOURCE_DIR}/include/gpu/d3d"
+          )
+
+          # --- Library Files ---
+          find_library(SKIA_LIBRARY skia HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
+          find_library(SKSHAPER_LIBRARY skshaper HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
+          find_library(SKCMS_LIBRARY skcms HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
+          # Dawn/WebGPU libraries
+          find_library(DAWN_NATIVE_LIBRARY dawn_native HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
+          find_library(DAWN_PROC_LIBRARY dawn_proc HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
+          find_library(WEBGPU_SHARED_LIBRARY webgpu_shared HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
+          find_library(ABSEIL_FLAGS_LIBRARY absl_flags_internal HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
+          find_library(ABSEIL_BASE_LIBRARY absl_base HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/win-x64")
+          
+          target_link_libraries(Skia::Skia INTERFACE
+              "${SKIA_LIBRARY}"
+              "${SKSHAPER_LIBRARY}"
+              "${SKCMS_LIBRARY}"
+              "${DAWN_NATIVE_LIBRARY}"
+              "${DAWN_PROC_LIBRARY}"
+              "${WEBGPU_SHARED_LIBRARY}"
+              "${ABSEIL_FLAGS_LIBRARY}"
+              "${ABSEIL_BASE_LIBRARY}"
+          )
+
+          # --- System Graphics Libraries (Windows) ---
+          target_link_libraries(Skia::Skia INTERFACE
+              dxgi      # DirectX Graphics Infrastructure
+              d3d11     # Direct3D 11
+              d3d12     # Direct3D 12
+              vulkan-1  # Vulkan
+              opengl32  # OpenGL
+              gdi32     # Windows GDI
+              ole32
+              oleaut32
+              uuid
+              user32
+              runtimeobject
+          )
+
+          # --- Defines ---
+          target_compile_definitions(Skia::Skia INTERFACE
+              SK_BUILD_FOR_WIN
+              SK_GANESH
+              SK_GRAPHITE
+              SK_GL
+              SK_VULKAN
+              SK_METAL # Defined for completeness, but not linked on Windows
+              SK_DIRECT3D
+              UNICODE
+              _UNICODE
+          )
+
+          # --- DLL Handling ---
+          add_custom_command(TARGET your_target_name POST_BUILD # 将 your_target_name 替换为你的可执行文件名
+              COMMAND ${CMAKE_COMMAND} -E copy_directory
+              "${CMAKE_CURRENT_SOURCE_DIR}/bin/win-x64"
+              "$<TARGET_FILE_DIR:your_target_name>" # 将 your_target_name 替换为你的可执行文件名
+              COMMENT "Copying Skia DLLs to output directory"
+          )
+          '@
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
         with:
-          body: "Automated Skia build from branch `${{ env.SKIA_BRANCH }}` at commit `${{ env.SKIA_COMMIT_HASH }}`."
-          files: win-x64.zip
-          tag_name: skia-build-${{ env.SKIA_BRANCH }}-${{ env.SKIA_COMMIT_HASH }}-${{ github.run_number }}
-          prerelease: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: win-x64
+          path: staging
