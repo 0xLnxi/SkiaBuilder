@@ -13,6 +13,8 @@ jobs:
   build:
     runs-on: windows-latest
 
+    # .github/workflows/build-skia.yml (最终修正版)
+
     steps:
       - name: 'Checkout Code'
         uses: actions/checkout@v4
@@ -22,25 +24,26 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: 'Install depot_tools'
-        # 将 depot_tools 克隆下来并添加到当前会话的 PATH 中
+      - name: 'Install depot_tools and Add to PATH'
+        # 【已修正】
+        # 将 depot_tools 的绝对路径写入 $GITHUB_PATH 文件中。
+        # 这是 GitHub Actions 推荐的、能让环境变量在工作流的后续步骤中保持生效的方法。
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          $env:PATH = "$env:PATH;" + (Get-Item .).FullName + "\depot_tools"
+          $depotToolsPath = (Get-Item ".\\depot_tools").FullName
+          echo "$depotToolsPath" >> $env:GITHUB_PATH
           gclient
 
       - name: 'Fetch Skia Source'
         # 克隆 Skia 源码并同步依赖
+        # 此时 'gn' 命令所在的 depot_tools 目录已经在 PATH 中了
         run: |
           git clone https://skia.googlesource.com/skia.git
           cd skia
           python tools/git-sync-deps
 
       - name: 'Generate Build Files with GN'
-        # 【已修正】
-        # 移除了错误的 skia_gm.py 调用。
-        # 将所有 --args 参数合并到一行，以避免 shell 的语法解析问题。
-        # gn 命令可以直接调用，因为它存在于 depot_tools 中，而 depot_tools 已经在 PATH 里。
+        # 此步骤无需改动。由于上一步正确设置了 PATH，这里的 'gn' 命令现在可以被正确找到。
         working-directory: ./skia
         run: >
           gn gen out/Release-x64 --args="is_official_build=true skia_use_system_libs=false skia_use_dawn=true skia_use_gl=true skia_use_vulkan=true skia_use_d3d=true skia_enable_ganesh_backend=true skia_enable_graphite_backend=true extra_cflags_cc=[\"/std:c++20\"] target_cpu=\"x64\" target_os=\"win\""
