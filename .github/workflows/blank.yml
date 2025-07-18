@@ -1,229 +1,141 @@
-# .github/workflows/build_skia.yml
-# 中文注释:
-# 这是一个用于每周构建 Skia 的 GitHub Action 工作流。
-# 它会生成一个 win-x64.zip 文件，其中包含预编译的 Skia 库 (含 Ganesh 和 Graphite/Dawn)
-# 以及一个 CMake 配置文件，方便在下游项目中直接使用。
+# .github/workflows/build-skia.yml
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流
 
-name: Weekly Build Skia (win-x64)
+name: 'Weekly Build Skia'
 
 on:
-  # 允许手动触发此工作流
-  workflow_dispatch:
-
-  # 设置定时任务，于每周日的协调世界时(UTC)凌晨 5 点运行
+  workflow_dispatch: # 允许手动触发
   schedule:
-  
-    - cron: '0 5 * * 0'
+    - cron: '0 0 * * 0' # 每周日午夜触发
 
 jobs:
-  build:
-    runs-on: windows-latest
-    
+  build_skia_windows:
+    name: 'Build Skia for Windows (x64)'
+    runs-on: windows-latest # 使用最新的Windows环境
+
     steps:
-      - name: Maximize Build Space
-        # 中文注释: 清理不必要的软件以释放磁盘空间，防止因空间不足导致构建失败。
-        uses: easimon/maximize-build-space@v10
-        with:
-          root-reserve-mb: 512
-          swap-size-mb: 128
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-
-      - name: Checkout repository
-        # 中文注释: 检出当前仓库代码，虽然此工作流不直接使用仓库内容，但这是标准步骤。
+      - name: 'Checkout Skia'
         uses: actions/checkout@v4
-
-      - name: Setup Vulkan SDK
-        # 中文注释: 安装 Vulkan SDK。这是让 Skia 的 Vulkan 后端能被正确构建和链接，
-        # 并确保后续 CMake 的 find_package(Vulkan) 能成功找到的必要步骤。
-        uses: jmatio/setup-vulkan-sdk@v1
         with:
-          vulkan-query-version: '1.3.x'
-          vulkan-components: 'Runtime, Shaders'
-      
-      - name: Setup Python
-        # 中文注释: Skia 的构建工具依赖 Python。
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+          repository: 'google/skia' # 指定Skia官方仓库
+          # persist-credentials: false # 对于公共仓库，不需要凭证
 
-      - name: Setup depot_tools
-        # 中文注释: depot_tools 是 Google 的一套工具集，包含 gclient, gn, ninja 等，是构建 Skia 的必需品。
-        # 此步骤会克隆 depot_tools 并将其路径添加到环境变量中。
+      - name: 'Install depot_tools'
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          echo "$PWD\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        shell: pwsh
+          $env:PATH = "$env:PATH;$pwd/depot_tools"
+          gclient
 
-      - name: Fetch Skia source code
-        # 中文注释: 使用 gclient 工具拉取 Skia 及其所有依赖项（例如 Dawn, ANGLE, ICU等）。
-        # --no-history=true 参数可以显著减少下载时间和占用的空间。
+      - name: 'Sync Skia Dependencies (gclient sync)'
         run: |
-          gclient config --unmanaged --no-history=true https://skia.googlesource.com/skia.git
-          gclient sync
-        shell: pwsh
-      
-      - name: Generate build files with GN
-        # 中文注释:
-        # 使用 gn 工具生成 Ninja 构建文件。
-        # 这里的参数 (args) 定义了我们的构建配置。
-        working-directory: skia
+          $env:PATH = "$env:PATH;$pwd/depot_tools"
+          python tools/git-sync-deps
+
+      - name: 'Setup Build Configuration'
+        id: setup_build
         run: |
-          $gn_args = "is_official_build=true" `
-                   + " is_debug=false" `
-                   + " target_cpu=`"x64`"" `
-                   + " target_os=`"win`"" `
-                   + " skia_use_shared_libraries=true" `
-                   + " skia_use_icu=true" `
-                   + " skia_use_fonthost_win=true" `
-                   + " skia_use_dng_sdk=false" `
-                   + " skia_enable_pdf=false" `
-                   + " skia_enable_skottie=false" `
-                   + " skia_enable_ganesh=true" `
-                   + " skia_use_gl=true" `
-                   + " skia_use_d3d=true" `
-                   + " skia_use_vulkan=true" `
-                   + " skia_enable_graphite=true" `
-                   + " skia_use_dawn=true" `
-                   + " dawn_enable_d3d11=true" `
-                   + " dawn_enable_d3d12=true" `
-                   + " dawn_enable_opengl=true" `
-                   + " dawn_enable_vulkan=true" `
-                   + " extra_cflags_cc=[`"/std:c++20`"]"
+          # 定义输出目录
+          $outDir = "out/Release"
+          echo "out_dir=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          bin/gn gen ../out/Release --args=$gn_args
+          # Skia构建参数
+          # 详细参数说明: https://skia.org/docs/user/build/
+          $skiaArgs = @(
+            'is_official_build=true',
+            'is_component_build=false', # 静态库构建
+            'is_debug=false',
+            'skia_use_system_expat=false',
+            'skia_use_system_libjpeg_turbo=false',
+            'skia_use_system_libpng=false',
+            'skia_use_system_libwebp=false',
+            'skia_use_system_zlib=false',
+            'skia_use_system_icu=false',
+            'skia_use_system_harfbuzz=false',
+            'skia_use_system_freetype2=false',
+            'skia_use_gl=true', # 启用Ganesh GL后端
+            'skia_use_vulkan=true', # 启用Ganesh Vulkan后端
+            'skia_use_d3d=true', # 启用Ganesh D3D后端
+            'skia_enable_ganesh=true', # 启用Ganesh
+            'skia_use_dawn=true', # 启用Graphite Dawn后端
+            'skia_enable_graphite=true', # 启用Graphite
+            'skia_enable_pdf=false', # 禁用PDF，如果不需要可以减小体积
+            'skia_enable_skottie=true', # 保留Skottie动画支持
+            'extra_cflags_cc=["/std:c++20"]' # 指定C++20标准
+          )
+          # 将参数数组拼接成一个字符串
+          $gnArgs = $skiaArgs -join ' '
+          echo "gn_args=$gnArgs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         shell: pwsh
-      
-      - name: Compile Skia with Ninja
-        # 中文注释:
-        # 使用 Ninja 执行编译。-C 指定了构建目录。
-        # 我们编译了以下目标：
-        # - skia: Skia 核心库
-        # - skshaper: 文本塑形库
-        # - skparagraph: 文本布局库
-        # - dawn: Dawn WebGPU 实现，作为 Graphite 的后端
-        run: ninja -C out/Release skia skshaper skparagraph dawn
-        shell: pwsh
-        
-      - name: Stage build artifacts
-        # 中文注释:
-        # 创建一个 "staging" 目录，并将所有构建产物（头文件、库、DLL等）
-        # 按照规范的目录结构整理进去。
-        id: stage
+
+      - name: 'Generate Ninja Files (gn gen)'
         run: |
-          $staging_dir = "staging"
-          New-Item -ItemType Directory -Force -Path $staging_dir/bin
-          New-Item -ItemType Directory -Force -Path $staging_dir/lib
-          New-Item -ItemType Directory -Force -Path $staging_dir/include
-
-          Copy-Item -Path skia/include/* -Destination $staging_dir/include -Recurse -Force
-          
-          Get-ChildItem -Path out/Release -Filter *.dll | Copy-Item -Destination $staging_dir/bin
-          Get-ChildItem -Path out/Release -Filter *.lib | Copy-Item -Destination $staging_dir/lib
-          Get-ChildItem -Path out/Release -Filter *.dat | Copy-Item -Destination $staging_dir/bin # ICU data file
-
-          echo "staging_path=$staging_dir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $env:PATH = "$env:PATH;$pwd/depot_tools"
+          gn gen "${{ env.out_dir }}" --args="${{ env.gn_args }}"
         shell: pwsh
 
-      - name: Generate CMake config file
-        # 中文注释:
-        # 动态生成一个 CMakeLists.txt 文件，这个文件是实现 "开箱即用" 的关键。
-        # 它定义了一个名为 Skia::Skia 的 IMPORTED target，并自动处理了所有依赖项。
+      - name: 'Compile with Ninja'
         run: |
-          $cmake_content = @"
-# Generated by GitHub Action - Pre-built Skia Package
-# 中文注释: 这是一个由 GitHub Action 自动生成的 CMake 配置文件。
-# 当你在你的项目中使用 find_package(Skia) 时，CMake 会加载这个文件。
-
-cmake_minimum_required(VERSION 3.20)
-project(skia-prebuilt CXX)
-
-get_filename_component(Skia_PACKAGE_ROOT "`$${CMAKE_CURRENT_LIST_DIR}" REALPATH)
-
-# --- 定义 INTERFACE 目标 ---
-# 中文注释: 我们创建了一个名为 Skia::Skia 的 INTERFACE 目标。
-# 这是一个虚拟目标，它本身不编译任何东西，但它聚合了所有需要的信息：
-# 头文件路径、需要链接的库、以及系统依赖。
-# 这样，用户只需链接到这一个目标即可。
-add_library(Skia::Skia INTERFACE IMPORTED)
-
-# --- 配置头文件目录 ---
-target_include_directories(Skia::Skia INTERFACE
-    "`$${Skia_PACKAGE_ROOT}/include"
-)
-
-# --- 寻找并链接系统图形库 ---
-# 中文注释: 自动寻找并链接平台相关的图形 API 库。
-find_package(OpenGL REQUIRED)
-find_package(Vulkan REQUIRED)
-
-target_link_libraries(Skia::Skia INTERFACE
-    # Windows 平台特定库
-    d3d11
-    d3d12
-    dxgi
-    dwmapi
-    fontsub
-    # 跨平台图形库
-    OpenGL::GL
-    Vulkan::Vulkan
-)
-
-# --- 创建每个动态库的 IMPORTED 目标 ---
-# 中文注释: 为 staging/lib 目录下的每个 .lib 文件创建一个对应的 IMPORTED 目标。
-# 这些目标代表了我们编译出的动态链接库（.dll）。
-foreach(lib_file IN ITEMS skia skshaper skparagraph)
-    if(EXISTS "`$${Skia_PACKAGE_ROOT}/lib/`$${lib_file}.lib")
-        add_library(skia-module-`$${lib_file} SHARED IMPORTED)
-        set_target_properties(skia-module-`$${lib_file} PROPERTIES
-            IMPORTED_IMPLIB "`$${Skia_PACKAGE_ROOT}/lib/`$${lib_file}.lib"
-            IMPORTED_LOCATION "`$${Skia_PACKAGE_ROOT}/bin/`$${lib_file}.dll"
-        )
-        # 中文注释: 将这些具体的库链接到 Skia::Skia 这个总的 INTERFACE 目标上。
-        target_link_libraries(Skia::Skia INTERFACE skia-module-`$${lib_file})
-    endif()
-endforeach()
-
-# --- 提供一个辅助函数来复制运行时依赖 ---
-# 中文注释:
-# 这个 CMake 函数非常有用。当用户在他的项目中调用 skia_copy_runtime_dependencies(YourTargetName) 后，
-# 在构建时，所有 Skia 相关的 .dll 和 .dat 文件都会被自动复制到用户程序的可执行文件所在的目录。
-# 这就解决了程序运行时找不到 DLL 的问题。
-function(skia_copy_runtime_dependencies TARGET_NAME)
-    if(NOT TARGET `$${TARGET_NAME})
-        message(FATAL_ERROR "Target '`$${TARGET_NAME}' does not exist.")
-        return()
-    endif()
-
-    file(GLOB RUNTIME_DEPS
-        "`$${Skia_PACKAGE_ROOT}/bin/*.dll"
-        "`$${Skia_PACKAGE_ROOT}/bin/*.dat"
-    )
-    
-    add_custom_command(
-        TARGET `$${TARGET_NAME} POST_BUILD
-        COMMAND `$${CMAKE_COMMAND} -E copy_if_different `$${RUNTIME_DEPS} `$<TARGET_FILE_DIR:`$${TARGET_NAME}>`
-        COMMENT "Copying Skia runtime dependencies for `$${TARGET_NAME}"
-    )
-endfunction()
-
-message(STATUS "Found pre-built Skia package (`$${Skia_PACKAGE_ROOT})")
-message(STATUS "-> Use target 'Skia::Skia' for linking.")
-message(STATUS "-> Call skia_copy_runtime_dependencies(YourTarget) to copy runtime files.")
-"@
-
-          $cmake_content | Out-File -FilePath "${{ steps.stage.outputs.staging_path }}/CMakeLists.txt" -Encoding utf8
-        shell: pwsh
-        
-      - name: Archive production artifacts
-        # 中文注释: 将整个 staging 目录压缩成 win-x64.zip 文件。
-        run: Compress-Archive -Path ${{ steps.stage.outputs.staging_path }}/* -DestinationPath win-x64.zip
+          $env:PATH = "$env:PATH;$pwd/depot_tools"
+          ninja -C "${{ env.out_dir }}" skia modules
         shell: pwsh
 
-      - name: Upload artifact
-        # 中文注释: 上传 win-x64.zip 作为工作流的产物，方便下载。
+      - name: 'Prepare Package'
+        id: prepare_package
+        run: |
+          # 创建打包目录结构
+          $stagingDir = "staging"
+          $binDir = "$stagingDir/bin"
+          $libDir = "$stagingDir/lib"
+          $includeDir = "$stagingDir/include"
+
+          New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $includeDir
+
+          # 1. 复制头文件 (include)
+          # Skia核心头文件
+          Copy-Item -Path "include/*" -Destination $includeDir -Recurse
+          # Graphite头文件
+          Copy-Item -Path "modules/graphite/include/*" -Destination "$includeDir/graphite" -Recurse
+
+          # 2. 复制库文件 (lib)
+          Copy-Item -Path "${{ env.out_dir }}/*.lib" -Destination $libDir
+
+          # 3. 复制动态链接库 (bin)
+          # 对于Windows，主要是d3dcompiler_47.dll
+          Copy-Item -Path "${{ env.out_dir }}/d3dcompiler_47.dll" -Destination $binDir
+
+          # 4. 复制并创建CMake配置文件
+          Copy-Item -Path "tools/skia-config.cmake" -Destination "$stagingDir/SkiaConfig.cmake"
+          $cmakeContent = @"
+          # CMakeLists.txt to find and use Skia
+          cmake_minimum_required(VERSION 3.20)
+          project(MySkiaApp)
+
+          # 设置C++标准
+          set(CMAKE_CXX_STANDARD 20)
+          set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+          # 添加Skia包
+          # 将 <path_to_win-x64> 替换为解压后的win-x64文件夹路径
+          set(Skia_DIR "<path_to_win-x64>")
+          find_package(Skia REQUIRED)
+
+          add_executable(main main.cpp)
+
+          # 链接Skia和平台图形API
+          target_link_libraries(main PRIVATE Skia::Skia)
+          "@
+          $cmakeContent | Out-File -FilePath "$stagingDir/CMakeLists.txt" -Encoding utf8
+
+          echo "staging_directory=$stagingDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
+
+      - name: 'Create Zip Archive'
+        run: |
+          Compress-Archive -Path "${{ env.staging_directory }}/*" -DestinationPath "win-x64.zip"
+        shell: pwsh
+
+      - name: 'Upload Artifact'
         uses: actions/upload-artifact@v4
         with:
-          name: skia-win-x64-release
-          path: win-x64.zip
+          name: 'skia-win-x64-bundle'
+          path: 'win-x64.zip'
