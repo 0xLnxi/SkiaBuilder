@@ -1,5 +1,5 @@
 # .github/workflows/build-skia.yml
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V9 - 最终修复版)
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V10 - 最终修复版)
 
 name: 'Weekly Build Skia'
 
@@ -89,7 +89,7 @@ jobs:
         working-directory: ./skia
         shell: pwsh
         run: |
-          # 注释: 按照你的要求，使用 -j 16 参数进行并行编译以加快速度
+          # 使用 -j 16 参数进行并行编译以加快速度
           ninja -j 16 -C "${{ env.out_dir }}" skia modules
 
       - name: 'Prepare Package'
@@ -103,19 +103,22 @@ jobs:
           $includeDir = "$stagingDir/include"
           New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $includeDir
           
-          # 1. 复制所有公共头文件
           Copy-Item -Path "include" -Destination $includeDir -Recurse
-          
-          # 2. 复制库文件
           Copy-Item -Path "${{ env.out_dir }}/*.lib" -Destination $libDir
-          
-          # 3. 复制动态链接库
           Copy-Item -Path "${{ env.out_dir }}/d3dcompiler_47.dll" -Destination $binDir -ErrorAction SilentlyContinue
           
-          # 4. (关键修复) 从正确的构建输出目录复制CMake配置文件
-          Copy-Item -Path "${{ env.out_dir }}/skia-config.cmake" -Destination "$stagingDir/SkiaConfig.cmake"
+          # --- 关键修复：动态查找并复制CMake配置文件 ---
+          Write-Host "Searching for skia-config.cmake in ${{ env.out_dir }}..."
+          $cmakeConfigFile = Get-ChildItem -Path "${{ env.out_dir }}" -Recurse -Filter "skia-config.cmake" | Select-Object -First 1
           
-          # 5. 创建示例 CMakeLists.txt
+          if ($null -ne $cmakeConfigFile) {
+              Write-Host "Found CMake config at: $($cmakeConfigFile.FullName)"
+              Copy-Item -Path $cmakeConfigFile.FullName -Destination "$stagingDir/SkiaConfig.cmake"
+          } else {
+              Write-Host "ERROR: skia-config.cmake was not found in the build output! The build has failed."
+              exit 1
+          }
+          
           $cmakeContent = "cmake_minimum_required(VERSION 3.20)" `
             + "`nproject(MySkiaApp)" `
             + "`n" `
