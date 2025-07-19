@@ -1,5 +1,5 @@
 # .github/workflows/build-skia.yml
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V11 - 最终修复版)
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V12 - 最终修复版)
 
 name: 'Weekly Build Skia'
 
@@ -55,7 +55,7 @@ jobs:
           
           # 创建 args.gn 文件来保存所有构建参数
           $gnFileContent = @"
-          # --- 关键修复：添加此标志以强制生成CMake配置文件 ---
+          # 强制生成CMake配置文件，这是必须的
           skia_build_for_cmake = true
           
           is_official_build = true
@@ -93,8 +93,8 @@ jobs:
         working-directory: ./skia
         shell: pwsh
         run: |
-          # 使用 -j 16 参数进行并行编译以加快速度
-          ninja -j 16 -C "${{ env.out_dir }}" skia modules
+          # --- 关键修复：添加 skia_public 目标来确保生成 skia-config.cmake ---
+          ninja -j 16 -C "${{ env.out_dir }}" skia modules skia_public
 
       - name: 'Prepare Package'
         working-directory: ./skia
