@@ -1,5 +1,5 @@
 # .github/workflows/build-skia.yml
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V10 - 最终修复版)
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V11 - 最终修复版)
 
 name: 'Weekly Build Skia'
 
@@ -53,7 +53,11 @@ jobs:
           $outDir = "out/Release"
           echo "out_dir=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
+          # 创建 args.gn 文件来保存所有构建参数
           $gnFileContent = @"
+          # --- 关键修复：添加此标志以强制生成CMake配置文件 ---
+          skia_build_for_cmake = true
+          
           is_official_build = true
           is_component_build = false
           is_debug = false
@@ -107,7 +111,7 @@ jobs:
           Copy-Item -Path "${{ env.out_dir }}/*.lib" -Destination $libDir
           Copy-Item -Path "${{ env.out_dir }}/d3dcompiler_47.dll" -Destination $binDir -ErrorAction SilentlyContinue
           
-          # --- 关键修复：动态查找并复制CMake配置文件 ---
+          # 动态查找并复制CMake配置文件
           Write-Host "Searching for skia-config.cmake in ${{ env.out_dir }}..."
           $cmakeConfigFile = Get-ChildItem -Path "${{ env.out_dir }}" -Recurse -Filter "skia-config.cmake" | Select-Object -First 1
           
