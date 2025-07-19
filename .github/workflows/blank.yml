@@ -1,5 +1,5 @@
 # .github/workflows/build-skia.yml
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V4 - 最终修复版)
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V5 - 最终修复版)
 
 name: 'Weekly Build Skia'
 
@@ -26,14 +26,15 @@ jobs:
         run: |
           # 1. 克隆 depot_tools
           git clone 'https://chromium.googlesource.com/chromium/tools/depot_tools.git'
-          
-          # 2. 将其路径添加到环境变量中，以便后续步骤可以立即使用
           $depotToolsPath = "${{ github.workspace }}/depot_tools"
+          
+          # 2. (关键修复) 将路径添加到 *当前* Shell 会话的 PATH 中
+          $env:PATH = "$depotToolsPath;$env:PATH"
+          
+          # 3. 将路径添加到 *后续所有* 步骤的 PATH 中
           echo "$depotToolsPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           
-          # 3. (关键步骤) 运行 gclient 来初始化 depot_tools。
-          #    这会下载它所需的工具 (如 gn, ninja, python) 并创建必要的配置文件。
-          #    我们只运行它一次，让它完成设置。
+          # 4. 现在 gclient 可以在当前会话中被找到并运行，以完成初始化
           gclient --version
           Write-Host "Depot_tools initialized successfully."
       
