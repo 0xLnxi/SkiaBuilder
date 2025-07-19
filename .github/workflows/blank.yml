@@ -1,25 +1,19 @@
-# .github/workflows/build-skia.yml
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V13 - 最终修复版)
+# .github/workflows/build-dawn.yml
+# 文件注释: 用于每周构建 Dawn 的 GitHub Actions 工作流 (已修复工具链下载错误)
 
-name: 'Weekly Build Skia'
+name: 'Weekly Build Dawn'
 
 on:
   workflow_dispatch: # 允许手动触发
   schedule:
-    - cron: '0 0 * * 0' # 每周日午夜触发
+    - cron: '0 1 * * 0' # 每周日凌晨1点触发 (与Skia错开)
 
 jobs:
-  build_skia_windows:
-    name: 'Build Skia for Windows (x64)'
+  build_dawn_windows:
+    name: 'Build Dawn for Windows (x64)'
     runs-on: windows-latest
 
     steps:
-      - name: 'Checkout Skia Source Code'
-        uses: actions/checkout@v4
-        with:
-          repository: 'google/skia'
-          path: 'skia'
-
       - name: 'Install and Initialize depot_tools'
         shell: pwsh
         run: |
@@ -30,71 +24,59 @@ jobs:
           gclient --version
           Write-Host "Depot_tools initialized successfully."
       
-      - name: 'Neutralize emsdk activation script'
-        working-directory: ./skia
+      # --- 关键修复：配置 depot_tools 以使用本地安装的 Visual Studio ---
+      - name: 'Configure depot_tools Environment'
         shell: pwsh
         run: |
-          $scriptPath = "bin/activate-emsdk"
-          $dummyScript = "import sys; sys.exit(0)"
-          Set-Content -Path $scriptPath -Value $dummyScript
-          Write-Host "Successfully neutralized activate-emsdk script."
+          # 告诉 depot_tools 使用 Actions runner 自带的 VS 工具链，而不是尝试从 Google Cloud 下载
+          echo "DEPOT_TOOLS_WIN_TOOLCHAIN=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Set DEPOT_TOOLS_WIN_TOOLCHAIN=0"
 
-      - name: 'Sync Skia Dependencies (git-sync-deps)'
-        working-directory: ./skia
+      - name: 'Checkout Dawn and Sync Dependencies'
         shell: pwsh
         run: |
-          python tools/git-sync-deps
+          # 1. 创建一个目录来存放 Dawn 项目
+          New-Item -ItemType Directory -Path "dawn_project"
+          Set-Location "dawn_project"
+          
+          # 2. 配置 gclient 来拉取独立的 Dawn
+          gclient config --name=dawn "https://dawn.googlesource.com/dawn"
+          
+          # 3. 同步所有代码和依赖
+          gclient sync
+          
+          Set-Location ".."
 
       - name: 'Setup Build Configuration'
-        working-directory: ./skia
+        working-directory: ./dawn_project/dawn
         id: setup_build
         shell: pwsh
         run: |
           $outDir = "out/Release"
           echo "out_dir=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
-          # 创建 args.gn 文件，移除不再需要的 skia_build_for_cmake
           $gnFileContent = @"
           is_official_build = true
-          is_component_build = false
           is_debug = false
-          skia_use_system_expat = false
-          skia_use_system_libjpeg_turbo = false
-          skia_use_system_libpng = false
-          skia_use_system_libwebp = false
-          skia_use_system_zlib = false
-          skia_use_system_icu = false
-          skia_use_system_harfbuzz = false
-          skia_use_system_freetype2 = false
-          skia_use_gl = true
-          skia_use_vulkan = true
-          skia_use_d3d = true
-          skia_enable_ganesh = true
-          skia_use_dawn = true
-          skia_enable_graphite = true
-          skia_enable_pdf = false
-          skia_enable_skottie = true
-          extra_cflags_cc = [ "/std:c++20" ]
           "@
           
           Set-Content -Path "args.gn" -Value $gnFileContent
           Write-Host "Build arguments saved to args.gn"
 
       - name: 'Generate Ninja Files (gn gen)'
-        working-directory: ./skia
+        working-directory: ./dawn_project/dawn
         shell: pwsh
         run: |
           gn gen "${{ env.out_dir }}" --args-file="args.gn"
 
       - name: 'Compile with Ninja'
-        working-directory: ./skia
+        working-directory: ./dawn_project/dawn
         shell: pwsh
         run: |
-          # 移除无效的 skia_public 目标，只编译我们需要的库
-          ninja -j 16 -C "${{ env.out_dir }}" skia modules
+          ninja -j 16 -C "${{ env.out_dir }}"
 
       - name: 'Prepare Package'
-        working-directory: ./skia
+        working-directory: ./dawn_project/dawn
         id: prepare_package
         shell: pwsh
         run: |
@@ -102,50 +84,21 @@ jobs:
           $binDir = "$stagingDir/bin"
           $libDir = "$stagingDir/lib"
           $includeDir = "$stagingDir/include"
-          New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $includeDir
+          New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $includeDir, "$libDir/cmake"
           
-          Copy-Item -Path "include" -Destination $includeDir -Recurse
+          Write-Host "Copying public headers..."
+          Copy-Item -Path "src/include/dawn" -Destination $includeDir -Recurse
+          
+          Write-Host "Copying library files..."
           Copy-Item -Path "${{ env.out_dir }}/*.lib" -Destination $libDir
-          Copy-Item -Path "${{ env.out_dir }}/d3dcompiler_47.dll" -Destination $binDir -ErrorAction SilentlyContinue
           
-          # --- 关键修复：手动创建 SkiaConfig.cmake 文件 ---
-          Write-Host "Manually creating SkiaConfig.cmake..."
-          $cmakeConfigContent = @"
-          # SkiaConfig.cmake - Manually generated by GitHub Actions workflow
+          Write-Host "Copying DLLs..."
+          Copy-Item -Path "${{ env.out_dir }}/*.dll" -Destination $binDir -ErrorAction SilentlyContinue
           
-          if(NOT TARGET Skia::Skia)
-              add_library(Skia::Skia INTERFACE IMPORTED)
-          endif()
+          Write-Host "Copying CMake package files..."
+          Copy-Item -Path "${{ env.out_dir }}/lib/cmake/dawn" -Destination "$libDir/cmake" -Recurse
           
-          set(Skia_INCLUDE_DIR "\${CMAKE_CURRENT_LIST_DIR}/include")
-          set(Skia_LIBRARY_DIR "\${CMAKE_CURRENT_LIST_DIR}/lib")
-          
-          target_include_directories(Skia::Skia INTERFACE
-              "\$<BUILD_INTERFACE:\${Skia_INCLUDE_DIR}>"
-              "\$<INSTALL_INTERFACE:include>"
-          )
-          
-          # 自动查找所有编译出的 .lib 文件
-          file(GLOB Skia_LIBRARIES "\${Skia_LIBRARY_DIR}/*.lib")
-          
-          # 链接所有 Skia 库以及必需的系统库
-          target_link_libraries(Skia::Skia INTERFACE
-              \${Skia_LIBRARIES}
-              d3d11.lib
-              d3d12.lib
-              dxgi.lib
-              d3dcompiler.lib
-              opengl32.lib
-              fontsub.lib
-              usp10.lib
-              ole32.lib
-              user32.lib
-              gdi32.lib
-          )
-          "@
-          Set-Content -Path "$stagingDir/SkiaConfig.cmake" -Value $cmakeConfigContent
-          
-          $cmakeListsContent = "cmake_minimum_required(VERSION 3.20)`nproject(MySkiaApp)`n`nset(CMAKE_CXX_STANDARD 20)`nset(CMAKE_CXX_STANDARD_REQUIRED ON)`n`n# 将 <path_to_win-x64> 替换为解压后的win-x64文件夹路径`nset(Skia_DIR `<path_to_win-x64>`)`nfind_package(Skia REQUIRED)`n`nadd_executable(main main.cpp)`n`n# 链接Skia和平台图形API`ntarget_link_libraries(main PRIVATE Skia::Skia)"
+          $cmakeListsContent = "cmake_minimum_required(VERSION 3.20)`nproject(MyDawnApp)`n`nset(CMAKE_CXX_STANDARD 17)`n`n# 将 <path_to_dawn-win-x64> 替换为解压后的文件夹路径`nset(Dawn_DIR `<path_to_dawn-win-x64>/lib/cmake/dawn`)`nfind_package(Dawn REQUIRED)`n`nadd_executable(main main.cpp)`n`n# 链接 Dawn (Dawn::dawn 是一个包含了所有所需组件的接口目标)`ntarget_link_libraries(main PRIVATE Dawn::dawn)"
           Set-Content -Path "$stagingDir/CMakeLists.txt" -Value $cmakeListsContent
           
           echo "staging_directory=$stagingDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -153,10 +106,10 @@ jobs:
       - name: 'Create Zip Archive'
         shell: pwsh
         run: |
-          Compress-Archive -Path "${{ env.staging_directory }}/*" -DestinationPath "win-x64.zip"
+          Compress-Archive -Path "${{ env.staging_directory }}/*" -DestinationPath "dawn-win-x64.zip"
 
       - name: 'Upload Artifact'
         uses: actions/upload-artifact@v4
         with:
-          name: 'skia-win-x64-bundle'
-          path: 'win-x64.zip'
+          name: 'dawn-win-x64-bundle'
+          path: 'dawn-win-x64.zip'
