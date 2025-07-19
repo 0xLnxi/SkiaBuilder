@@ -1,5 +1,5 @@
 # .github/workflows/build-skia.yml
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V5 - 最终修复版)
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V6 - 最终修复版)
 
 name: 'Weekly Build Skia'
 
@@ -20,21 +20,13 @@ jobs:
           repository: 'google/skia'
           path: 'skia'
 
-      # ------------------- 最终修复：depot_tools 的完整设置 -------------------
       - name: 'Install and Initialize depot_tools'
         shell: pwsh
         run: |
-          # 1. 克隆 depot_tools
           git clone 'https://chromium.googlesource.com/chromium/tools/depot_tools.git'
           $depotToolsPath = "${{ github.workspace }}/depot_tools"
-          
-          # 2. (关键修复) 将路径添加到 *当前* Shell 会话的 PATH 中
           $env:PATH = "$depotToolsPath;$env:PATH"
-          
-          # 3. 将路径添加到 *后续所有* 步骤的 PATH 中
           echo "$depotToolsPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          
-          # 4. 现在 gclient 可以在当前会话中被找到并运行，以完成初始化
           gclient --version
           Write-Host "Depot_tools initialized successfully."
       
@@ -80,7 +72,9 @@ jobs:
             'skia_enable_graphite=true',
             'skia_enable_pdf=false',
             'skia_enable_skottie=true',
-            'extra_cflags_cc=["/std:c++20"]'
+            # ------------------- 关键修复 -------------------
+            # 注释: 为gn的参数正确转义引号，确保它被正确解析
+            'extra_cflags_cc="[\"/std:c++20\"]"'
           )
           $gnArgs = $skiaArgs -join ' '
           echo "gn_args=$gnArgs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
