@@ -1,5 +1,5 @@
 # .github/workflows/build-dawn.yml
-# 文件注释: 用于每周构建 Dawn 的 GitHub Actions 工作流 (已修复工具链下载错误 V2)
+# 文件注释: 用于每周构建 Dawn 的 GitHub Actions 工作流 (最终规避方案)
 
 name: 'Weekly Build Dawn'
 
@@ -24,22 +24,19 @@ jobs:
           gclient --version
           Write-Host "Depot_tools initialized successfully."
       
-      # --- 关键修复：将环境变量设置和 gclient sync 合并到同一步骤 ---
       - name: 'Checkout Dawn and Sync Dependencies'
         shell: pwsh
         run: |
-          # 告诉 depot_tools 使用本地 VS 工具链，而不是尝试从 Google Cloud 下载
-          # 在当前 shell 中直接设置，确保立即生效
-          $env:DEPOT_TOOLS_WIN_TOOLCHAIN=0
-          Write-Host "Set DEPOT_TOOLS_WIN_TOOLCHAIN=0 for this step."
-
+          # 告诉后续步骤使用本地 VS 工具链
+          echo "DEPOT_TOOLS_WIN_TOOLCHAIN=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          
           New-Item -ItemType Directory -Path "dawn_project"
           Set-Location "dawn_project"
           
           gclient config --name=dawn "https://dawn.googlesource.com/dawn"
           
-          # 现在运行同步，它将使用上面设置的环境变量
-          gclient sync
+          # --- 关键修复：使用 --nohooks 参数跳过有问题的脚本 ---
+          gclient sync --nohooks
           
           Set-Location ".."
 
