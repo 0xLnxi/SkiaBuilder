@@ -1,5 +1,5 @@
 # .github/workflows/build-skia.yml
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V3 - 已修复depot_tools检出错误)
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V4 - 最终修复版)
 
 name: 'Weekly Build Skia'
 
@@ -17,37 +17,43 @@ jobs:
       - name: 'Checkout Skia Source Code'
         uses: actions/checkout@v4
         with:
-          repository: 'google/skia' # 指定Skia官方仓库
-          path: 'skia' # 将Skia代码检出到 'skia' 目录
+          repository: 'google/skia'
+          path: 'skia'
 
-      # ------------------- 关键修复步骤 -------------------
-      - name: 'Install depot_tools'
+      # ------------------- 最终修复：depot_tools 的完整设置 -------------------
+      - name: 'Install and Initialize depot_tools'
         shell: pwsh
         run: |
-          # 注释: 此处使用 'git clone' 是因为 depot_tools 仓库不在 GitHub 上，
-          # 'actions/checkout' 的 'owner/repo' 格式无法解析其路径。
+          # 1. 克隆 depot_tools
           git clone 'https://chromium.googlesource.com/chromium/tools/depot_tools.git'
-          echo "${{ github.workspace }}/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          
+          # 2. 将其路径添加到环境变量中，以便后续步骤可以立即使用
+          $depotToolsPath = "${{ github.workspace }}/depot_tools"
+          echo "$depotToolsPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          
+          # 3. (关键步骤) 运行 gclient 来初始化 depot_tools。
+          #    这会下载它所需的工具 (如 gn, ninja, python) 并创建必要的配置文件。
+          #    我们只运行它一次，让它完成设置。
+          gclient --version
+          Write-Host "Depot_tools initialized successfully."
       
       - name: 'Neutralize emsdk activation script'
-        working-directory: ./skia # 在skia目录下执行
+        working-directory: ./skia
         shell: pwsh
         run: |
-          # 注释: 此步骤是解决上一个问题的核心。
-          # 我们用一个总是成功退出的空Python脚本来覆盖原始的activate-emsdk脚本。
           $scriptPath = "bin/activate-emsdk"
           $dummyScript = "import sys; sys.exit(0)"
           Set-Content -Path $scriptPath -Value $dummyScript
           Write-Host "Successfully neutralized activate-emsdk script."
 
       - name: 'Sync Skia Dependencies (git-sync-deps)'
-        working-directory: ./skia # 在skia目录下执行
+        working-directory: ./skia
         shell: pwsh
         run: |
           python tools/git-sync-deps
 
       - name: 'Setup Build Configuration'
-        working-directory: ./skia # 在skia目录下执行
+        working-directory: ./skia
         id: setup_build
         shell: pwsh
         run: |
@@ -79,19 +85,19 @@ jobs:
           echo "gn_args=$gnArgs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: 'Generate Ninja Files (gn gen)'
-        working-directory: ./skia # 在skia目录下执行
+        working-directory: ./skia
         shell: pwsh
         run: |
           gn gen "${{ env.out_dir }}" --args="${{ env.gn_args }}"
 
       - name: 'Compile with Ninja'
-        working-directory: ./skia # 在skia目录下执行
+        working-directory: ./skia
         shell: pwsh
         run: |
           ninja -C "${{ env.out_dir }}" skia modules
 
       - name: 'Prepare Package'
-        working-directory: ./skia # 在skia目录下执行
+        working-directory: ./skia
         id: prepare_package
         shell: pwsh
         run: |
