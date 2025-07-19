@@ -1,5 +1,5 @@
 # .github/workflows/build-skia.yml
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V2 - 已修复emsdk激活错误)
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V3 - 已修复depot_tools检出错误)
 
 name: 'Weekly Build Skia'
 
@@ -20,26 +20,21 @@ jobs:
           repository: 'google/skia' # 指定Skia官方仓库
           path: 'skia' # 将Skia代码检出到 'skia' 目录
 
-      - name: 'Checkout depot_tools'
-        uses: actions/checkout@v4
-        with:
-          repository: 'chromium/tools/depot_tools' # 检出depot_tools
-          path: 'depot_tools' # 到 'depot_tools' 目录
-
-      - name: 'Add depot_tools to PATH'
+      # ------------------- 关键修复步骤 -------------------
+      - name: 'Install depot_tools'
         shell: pwsh
         run: |
-          # 将depot_tools的路径添加到当前环境的PATH中，使其可用于后续步骤
+          # 注释: 此处使用 'git clone' 是因为 depot_tools 仓库不在 GitHub 上，
+          # 'actions/checkout' 的 'owner/repo' 格式无法解析其路径。
+          git clone 'https://chromium.googlesource.com/chromium/tools/depot_tools.git'
           echo "${{ github.workspace }}/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      # ------------------- 关键修复步骤 -------------------
+      
       - name: 'Neutralize emsdk activation script'
         working-directory: ./skia # 在skia目录下执行
         shell: pwsh
         run: |
-          # 注释: 此步骤是解决问题的核心。
+          # 注释: 此步骤是解决上一个问题的核心。
           # 我们用一个总是成功退出的空Python脚本来覆盖原始的activate-emsdk脚本。
-          # 这样就绕过了在CI环境中激活emsdk失败的问题。
           $scriptPath = "bin/activate-emsdk"
           $dummyScript = "import sys; sys.exit(0)"
           Set-Content -Path $scriptPath -Value $dummyScript
@@ -49,7 +44,6 @@ jobs:
         working-directory: ./skia # 在skia目录下执行
         shell: pwsh
         run: |
-          # 注释: 现在运行依赖同步脚本，它会调用我们修改过的无害脚本
           python tools/git-sync-deps
 
       - name: 'Setup Build Configuration'
@@ -57,11 +51,8 @@ jobs:
         id: setup_build
         shell: pwsh
         run: |
-          # 定义输出目录
           $outDir = "out/Release"
           echo "out_dir=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          # Skia构建参数
           $skiaArgs = @(
             'is_official_build=true',
             'is_component_build=false',
@@ -84,7 +75,6 @@ jobs:
             'skia_enable_skottie=true',
             'extra_cflags_cc=["/std:c++20"]'
           )
-          # 将参数数组拼接成一个字符串
           $gnArgs = $skiaArgs -join ' '
           echo "gn_args=$gnArgs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -105,25 +95,15 @@ jobs:
         id: prepare_package
         shell: pwsh
         run: |
-          # 创建打包目录结构
           $stagingDir = "${{ github.workspace }}/staging"
           $binDir = "$stagingDir/bin"
           $libDir = "$stagingDir/lib"
           $includeDir = "$stagingDir/include"
-
           New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $includeDir
-
-          # 1. 复制头文件 (include)
           Copy-Item -Path "include" -Destination $includeDir -Recurse
           Copy-Item -Path "modules/graphite/include" -Destination "$includeDir/graphite" -Recurse
-
-          # 2. 复制库文件 (lib)
           Copy-Item -Path "${{ env.out_dir }}/*.lib" -Destination $libDir
-
-          # 3. 复制动态链接库 (bin)
           Copy-Item -Path "${{ env.out_dir }}/d3dcompiler_47.dll" -Destination $binDir
-
-          # 4. 复制并创建CMake配置文件
           Copy-Item -Path "tools/skia-config.cmake" -Destination "$stagingDir/SkiaConfig.cmake"
           $cmakeContent = "cmake_minimum_required(VERSION 3.20)" `
             + "`nproject(MySkiaApp)" `
@@ -140,7 +120,6 @@ jobs:
             + "`n# 链接Skia和平台图形API" `
             + "`ntarget_link_libraries(main PRIVATE Skia::Skia)"
           $cmakeContent | Out-File -FilePath "$stagingDir/CMakeLists.txt" -Encoding utf8
-
           echo "staging_directory=$stagingDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: 'Create Zip Archive'
