@@ -1,5 +1,5 @@
 # .github/workflows/build-skia.yml
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V6 - 最终修复版)
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V7 - 最终修复版)
 
 name: 'Weekly Build Skia'
 
@@ -50,40 +50,46 @@ jobs:
         id: setup_build
         shell: pwsh
         run: |
+          # 定义输出目录并保存以供后续步骤使用
           $outDir = "out/Release"
           echo "out_dir=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $skiaArgs = @(
-            'is_official_build=true',
-            'is_component_build=false',
-            'is_debug=false',
-            'skia_use_system_expat=false',
-            'skia_use_system_libjpeg_turbo=false',
-            'skia_use_system_libpng=false',
-            'skia_use_system_libwebp=false',
-            'skia_use_system_zlib=false',
-            'skia_use_system_icu=false',
-            'skia_use_system_harfbuzz=false',
-            'skia_use_system_freetype2=false',
-            'skia_use_gl=true',
-            'skia_use_vulkan=true',
-            'skia_use_d3d=true',
-            'skia_enable_ganesh=true',
-            'skia_use_dawn=true',
-            'skia_enable_graphite=true',
-            'skia_enable_pdf=false',
-            'skia_enable_skottie=true',
-            # ------------------- 关键修复 -------------------
-            # 注释: 为gn的参数正确转义引号，确保它被正确解析
-            'extra_cflags_cc="[\"/std:c++20\"]"'
-          )
-          $gnArgs = $skiaArgs -join ' '
-          echo "gn_args=$gnArgs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          
+          # 创建一个 args.gn 文件来保存所有构建参数
+          # 这种方法可以完全避免命令行中的引号和转义问题
+          $gnFileContent = @"
+          is_official_build = true
+          is_component_build = false
+          is_debug = false
+          skia_use_system_expat = false
+          skia_use_system_libjpeg_turbo = false
+          skia_use_system_libpng = false
+          skia_use_system_libwebp = false
+          skia_use_system_zlib = false
+          skia_use_system_icu = false
+          skia_use_system_harfbuzz = false
+          skia_use_system_freetype2 = false
+          skia_use_gl = true
+          skia_use_vulkan = true
+          skia_use_d3d = true
+          skia_enable_ganesh = true
+          skia_use_dawn = true
+          skia_enable_graphite = true
+          skia_enable_pdf = false
+          skia_enable_skottie = true
+          # C++20 参数现在是干净的 gn 语法，无需转义
+          extra_cflags_cc = [ "/std:c++20" ]
+          "@
+          
+          # 将内容写入文件
+          Set-Content -Path "args.gn" -Value $gnFileContent
+          Write-Host "Build arguments saved to args.gn"
 
       - name: 'Generate Ninja Files (gn gen)'
         working-directory: ./skia
         shell: pwsh
         run: |
-          gn gen "${{ env.out_dir }}" --args="${{ env.gn_args }}"
+          # 指示 gn 从文件而不是命令行读取参数
+          gn gen "${{ env.out_dir }}" --args-file="args.gn"
 
       - name: 'Compile with Ninja'
         working-directory: ./skia
