@@ -100,9 +100,10 @@ jobs:
         )
         
         # Windows特定配置：使用 /MD 运行时（多线程DLL）以实现动态链接
+        # 使用单引号来避免 PowerShell 解析错误
         $args += @(
-            "extra_cflags_c=[\"/MD\"]",
-            "extra_cflags_cc=[\"/MD\"]"
+            'extra_cflags_c=["/MD"]',
+            'extra_cflags_cc=["/MD"]'
         )
         
         $buildArgs = $args -join " "
