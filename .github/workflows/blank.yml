@@ -1,4 +1,4 @@
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V17 - 集成最终的CMake模板和匹配的打包结构)
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V18 - 使用+号连接字符串)
 
 name: 'Weekly Build Skia'
 
@@ -52,31 +52,30 @@ jobs:
           $outDir = "out/Release"
           echo "out_dir=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
-          $gnFileContent = @"
-          is_official_build = true
-          is_component_build = false
-          is_debug = false
-          skia_use_system_expat = false
-          skia_use_system_libjpeg_turbo = false
-          skia_use_system_libpng = false
-          skia_use_system_libwebp = false
-          skia_use_system_zlib = false
-          skia_use_system_icu = false
-          skia_use_system_harfbuzz = false
-          skia_use_system_freetype2 = false
-          skia_use_gl = true
-          skia_use_vulkan = true
-          skia_use_d3d = true
-          skia_enable_ganesh = true
-          skia_use_dawn = true
-          skia_enable_graphite = true
-          skia_enable_pdf = false
-          skia_enable_skottie = true
-          
-          extra_cflags = [ "/MD" ] 
-          extra_cflags_cc = [ "/std:c++20", "/MD" ]
-          extra_ldflags = [ "/NODEFAULTLIB:LIBCMT.lib" ]
-          "@
+          # --- 使用+号连接来定义gn配置 ---
+          $gnFileContent = "is_official_build = true`n" +
+                           "is_component_build = false`n" +
+                           "is_debug = false`n" +
+                           "skia_use_system_expat = false`n" +
+                           "skia_use_system_libjpeg_turbo = false`n" +
+                           "skia_use_system_libpng = false`n" +
+                           "skia_use_system_libwebp = false`n" +
+                           "skia_use_system_zlib = false`n" +
+                           "skia_use_system_icu = false`n" +
+                           "skia_use_system_harfbuzz = false`n" +
+                           "skia_use_system_freetype2 = false`n" +
+                           "skia_use_gl = true`n" +
+                           "skia_use_vulkan = true`n" +
+                           "skia_use_d3d = true`n" +
+                           "skia_enable_ganesh = true`n" +
+                           "skia_use_dawn = true`n" +
+                           "skia_enable_graphite = true`n" +
+                           "skia_enable_pdf = false`n" +
+                           "skia_enable_skottie = true`n" +
+                           "`n" +
+                           "extra_cflags = [ `"/MD`" ]`n" +
+                           "extra_cflags_cc = [ `"/std:c++20`"`, `"/MD`" ]`n" +
+                           "extra_ldflags = [ `"/NODEFAULTLIB:LIBCMT.lib`" ]"
           
           Set-Content -Path "args.gn" -Value $gnFileContent
           Write-Host "Build arguments saved to args.gn (using /MD runtime)"
@@ -131,39 +130,47 @@ jobs:
           
           # 5. 根据您提供的最终模板，生成 SkiaConfig.cmake 文件
           Write-Host "Creating SkiaConfig.cmake from the final user-provided template..."
-          $cmakeConfigContent = @"
-if(NOT TARGET Skia::Skia)
-    add_library(Skia::Skia INTERFACE IMPORTED)
-endif()
-
-set(Skia_PACKAGE_DIR "\${CMAKE_CURRENT_LIST_DIR}")
-set(Skia_INCLUDE_DIR "\${Skia_PACKAGE_DIR}/include")
-set(Skia_LIBRARY_DIR "\${Skia_PACKAGE_DIR}/lib")
-
-target_include_directories(Skia::Skia INTERFACE
-    "\${Skia_INCLUDE_DIR}"
-)
-
-file(GLOB Skia_LIBRARIES "\${Skia_LIBRARY_DIR}/*.lib")
-
-target_link_libraries(Skia::Skia INTERFACE
-    \${Skia_LIBRARIES}
-    d3d11.lib
-    d3d12.lib
-    dxgi.lib
-    d3dcompiler.lib
-    opengl32.lib
-    fontsub.lib
-    usp10.lib
-    ole32.lib
-    user32.lib
-    gdi32.lib
-)
-"@
+          # --- 使用+号连接来定义CMake配置 ---
+          $cmakeConfigContent = "if(NOT TARGET Skia::Skia)`n" +
+                                "    add_library(Skia::Skia INTERFACE IMPORTED)`n" +
+                                "endif()`n" +
+                                "`n" +
+                                "set(Skia_PACKAGE_DIR `"``${CMAKE_CURRENT_LIST_DIR}`"`)`n" +
+                                "set(Skia_INCLUDE_DIR `"``${Skia_PACKAGE_DIR}/include`"`)`n" +
+                                "set(Skia_LIBRARY_DIR `"``${Skia_PACKAGE_DIR}/lib`"`)`n" +
+                                "`n" +
+                                "target_include_directories(Skia::Skia INTERFACE`n" +
+                                "    `"``${Skia_INCLUDE_DIR}`"`n" +
+                                ")`n" +
+                                "`n" +
+                                "file(GLOB Skia_LIBRARIES `"``${Skia_LIBRARY_DIR}/*.lib`"`)`n" +
+                                "`n" +
+                                "target_link_libraries(Skia::Skia INTERFACE`n" +
+                                "    ``${Skia_LIBRARIES}`n" +
+                                "    d3d11.lib`n" +
+                                "    d3d12.lib`n" +
+                                "    dxgi.lib`n" +
+                                "    d3dcompiler.lib`n" +
+                                "    opengl32.lib`n" +
+                                "    fontsub.lib`n" +
+                                "    usp10.lib`n" +
+                                "    ole32.lib`n" +
+                                "    user32.lib`n" +
+                                "    gdi32.lib`n" +
+                                ")"
           Set-Content -Path "$stagingDir/SkiaConfig.cmake" -Value $cmakeConfigContent
           
           # 6. 创建一个示例 CMakeLists.txt
-          $cmakeListsContent = "cmake_minimum_required(VERSION 3.20)`nproject(MySkiaApp)`n`nset(CMAKE_CXX_STANDARD 20)`nset(CMAKE_CXX_STANDARD_REQUIRED ON)`n`n# 将 <path_to_win-x64> 替换为解压后的win-x64文件夹路径`nset(Skia_DIR `<path_to_win-x64>`)`nfind_package(Skia REQUIRED)`n`nadd_executable(main main.cpp)`n`ntarget_link_libraries(main PRIVATE Skia::Skia)"
+          # --- 使用+号连接来定义示例CMake ---
+          $cmakeListsContent = "cmake_minimum_required(VERSION 3.20)`n" +
+                               "project(MySkiaApp)`n`n" +
+                               "set(CMAKE_CXX_STANDARD 20)`n" +
+                               "set(CMAKE_CXX_STANDARD_REQUIRED ON)`n`n" +
+                               "# 将 <path_to_win-x64> 替换为解压后的win-x64文件夹路径`n" +
+                               "set(Skia_DIR `<path_to_win-x64>`)`n" +
+                               "find_package(Skia REQUIRED)`n`n" +
+                               "add_executable(main main.cpp)`n`n" +
+                               "target_link_libraries(main PRIVATE Skia::Skia)"
           Set-Content -Path "$stagingDir/CMakeLists.txt" -Value $cmakeListsContent
           
           echo "staging_directory=$stagingDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
