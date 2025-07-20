@@ -1,4 +1,4 @@
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V19 - 已修正为 include/include 和 include/modules 结构)
+# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V21 - 修正运行时库(CRT)链接错误)
 
 name: 'Weekly Build Skia'
 
@@ -52,8 +52,8 @@ jobs:
           $outDir = "out/Release"
           echo "out_dir=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
-          $gnFileContent = "is_official_build = true`n" +
-                           "is_component_build = false`n" +
+          # 关键修正: 移除 is_official_build = true 以允许 /MD 运行时生效
+          $gnFileContent = "is_component_build = false`n" +
                            "is_debug = false`n" +
                            "skia_use_system_expat = false`n" +
                            "skia_use_system_libjpeg_turbo = false`n" +
@@ -96,30 +96,29 @@ jobs:
         id: prepare_package
         shell: pwsh
         run: |
-          # 1. 定义所有打包路径
+          # 1. 定义打包路径
           $stagingDir = "${{ github.workspace }}/staging"
           $binDir = "$stagingDir/bin"
           $libDir = "$stagingDir/lib"
-          $mainIncludeDir = "$stagingDir/include"
-          $modulesHeadersTargetDir = "$mainIncludeDir/modules"
-          New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $mainIncludeDir, $modulesHeadersTargetDir -Force
+          $includeDir = "$stagingDir/include"
+          New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $includeDir -Force
 
-          # 2. 修正: 复制Skia核心头文件以创建 include/include 结构
-          Write-Host "Copying core Skia headers to staging/include/include/..."
-          Copy-Item -Path "include" -Destination $mainIncludeDir -Recurse
+          # 2. 复制核心头文件的 *内容* 到 staging/include
+          Write-Host "Copying top-level headers' contents to staging/include/..."
+          Copy-Item -Path "include/*" -Destination $includeDir -Recurse
 
-          # 3. 修正: 复制模块头文件以创建 include/modules/<module_name> 结构
-          Write-Host "Copying module headers to staging/include/modules/..."
-          $modulesSourceRoot = "modules"
-          $moduleDirs = Get-ChildItem -Path $modulesSourceRoot -Directory
-          foreach ($moduleDir in $moduleDirs) {
-              $moduleIncludeSourcePath = Join-Path $moduleDir.FullName "include"
-              if (Test-Path $moduleIncludeSourcePath -PathType Container) {
-                  $moduleName = $moduleDir.Name
-                  $moduleIncludeDestPath = Join-Path $modulesHeadersTargetDir $moduleName
-                  New-Item -ItemType Directory -Path $moduleIncludeDestPath -Force | Out-Null
-                  Write-Host "Copying headers for module '$moduleName' to '$moduleIncludeDestPath'"
-                  Copy-Item -Path "$($moduleIncludeSourcePath)/*" -Destination $moduleIncludeDestPath -Recurse
+          # 3. 使用递归搜索来确保找到并复制所有模块的头文件
+          Write-Host "Recursively searching and copying all module headers..."
+          $modulesSourcePath = (Get-Item "modules").FullName
+          $moduleIncludeDirs = Get-ChildItem -Path $modulesSourcePath -Recurse -Directory -Filter "include"
+          foreach ($dir in $moduleIncludeDirs) {
+              $relativeIncludePath = $dir.FullName.Substring($modulesSourcePath.Length).TrimStart('\/')
+              $moduleName = ($relativeIncludePath -split '[\\/]') | Select-Object -First 1
+              if (-not ([string]::IsNullOrEmpty($moduleName))) {
+                  $destinationPath = Join-Path $includeDir $moduleName
+                  New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
+                  Write-Host "Copying headers from $($dir.FullName) to $destinationPath"
+                  Copy-Item -Path "$($dir.FullName)/*" -Destination $destinationPath -Recurse -Force
               }
           }
 
@@ -128,22 +127,18 @@ jobs:
           Copy-Item -Path "${{ env.out_dir }}/*.lib" -Destination $libDir
           Copy-Item -Path "${{ env.out_dir }}/d3dcompiler_47.dll" -Destination $binDir -ErrorAction SilentlyContinue
           
-          # 5. 修正: 生成包含两个include路径的SkiaConfig.cmake文件
-          Write-Host "Creating SkiaConfig.cmake for the include/include and include/modules structure..."
+          # 5. 生成 SkiaConfig.cmake 文件
+          Write-Host "Creating SkiaConfig.cmake from the user-specified final template..."
           $cmakeConfigContent = "if(NOT TARGET Skia::Skia)`n" +
                                 "    add_library(Skia::Skia INTERFACE IMPORTED)`n" +
                                 "endif()`n" +
                                 "`n" +
-                                "set(Skia_ROOT_DIR `"``${CMAKE_CURRENT_LIST_DIR}`"`)`n" +
-                                "set(Skia_INCLUDE_DIR_CORE `"``${Skia_ROOT_DIR}/include/include`"`)`n" +
-                                "set(Skia_INCLUDE_DIR_MODULES `"``${Skia_ROOT_DIR}/include/modules`"`)`n" +
-                                "set(Skia_LIBRARY_DIR `"``${Skia_ROOT_DIR}/lib`"`)`n" +
+                                "set(Skia_PACKAGE_DIR `"``${CMAKE_CURRENT_LIST_DIR}`"`)`n" +
+                                "set(Skia_INCLUDE_DIR `"``${Skia_PACKAGE_DIR}/include`"`)`n" +
+                                "set(Skia_LIBRARY_DIR `"``${Skia_PACKAGE_DIR}/lib`"`)`n" +
                                 "`n" +
                                 "target_include_directories(Skia::Skia INTERFACE`n" +
-                                "    `"`$``<BUILD_INTERFACE:``${Skia_INCLUDE_DIR_CORE}>`"`n" +
-                                "    `"`$``<BUILD_INTERFACE:``${Skia_INCLUDE_DIR_MODULES}>`"`n" +
-                                "    `"`$``<INSTALL_INTERFACE:include/include>`"`n" +
-                                "    `"`$``<INSTALL_INTERFACE:include/modules>`"`n" +
+                                "    `"``${Skia_INCLUDE_DIR}`"`n" +
                                 ")`n" +
                                 "`n" +
                                 "file(GLOB Skia_LIBRARIES `"``${Skia_LIBRARY_DIR}/*.lib`"`)`n" +
