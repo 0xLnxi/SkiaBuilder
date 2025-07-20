@@ -1,17 +1,15 @@
-# 工作流名称：编译 Skia for Windows x64 (Ganesh + Graphite + Dawn)
-name: Build Skia for Windows x64 (Ganesh + Graphite + Dawn)
+# 工作流名称：编译 Skia for Windows x64 (C++20)
+name: Build Skia for Windows x64 (C++20)
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
   schedule:
-    # 每周日UTC时间0点（北京时间上午8点）执行一次
     - cron: '0 0 * * 0'
 
-# 设置工作流的默认权限
 permissions:
   contents: write
   packages: write
@@ -19,25 +17,20 @@ permissions:
 
 jobs:
   build-skia-windows:
-    # 指定运行环境为最新的 Windows Server
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
-    # 步骤 1: 检出您的代码仓库
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # 步骤 2: 设置 Python 环境
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.x'
 
-    # 步骤 3: 安装 Windows 构建依赖
     - name: Install Windows Dependencies
       run: choco install ninja -y
 
-    # 步骤 4: 获取 Google depot_tools 工具集
     - name: Get depot_tools
       run: |
         git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
@@ -45,7 +38,6 @@ jobs:
         echo "DEPOT_TOOLS_WIN_TOOLCHAIN=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       shell: powershell
 
-    # 步骤 5: 获取 Skia 源代码并同步依赖
     - name: Fetch Skia Source Code and Sync Dependencies
       run: |
         git clone https://skia.googlesource.com/skia.git
@@ -53,194 +45,123 @@ jobs:
         python tools/git-sync-deps
       shell: bash
 
-    # 步骤 6: 配置 Skia 构建参数 (启用 Dawn)
     - name: Configure Skia Build Arguments
       run: |
         cd skia
         
+        # C++20 标准已在此处添加 /std:c++20
         $args = @(
-            "is_official_build=true",
-            "is_debug=false",
-            "skia_use_system_expat=false",
-            "skia_use_system_icu=false",
-            "skia_use_system_libjpeg_turbo=false",
-            "skia_use_system_libpng=false",
-            "skia_use_system_libwebp=false",
-            "skia_use_system_zlib=false",
-            "skia_use_freetype=true",
-            "skia_use_system_freetype2=false",
-            "skia_use_harfbuzz=true",
-            "skia_use_system_harfbuzz=false",
-            "skia_enable_pdf=true",
-            "skia_enable_skottie=true",
-            "skia_enable_svg=true"
-        )
-
-        # 启用所有GPU后端: Ganesh, Graphite, 和 Dawn
-        $args += @(
-            "skia_enable_ganesh=true",
-            "skia_enable_graphite=true",
-            "skia_use_dawn=true",
-            "skia_use_gl=true",
-            "skia_use_vulkan=true",
-            "skia_use_direct3d=true",
-            "skia_use_angle=true",
-            "skia_enable_spirv_validation=false"
-        )
-        
-        # 目标平台和架构
-        $args += @(
-            "target_os=`"win`"",
-            "target_cpu=`"x64`""
-        )
-        
-        # Windows特定配置：/MD 运行时 和 Dawn 所需的宏
-        $args += @(
+            'is_official_build=true',
+            'is_debug=false',
+            'skia_use_system_expat=false',
+            'skia_use_system_icu=false',
+            'skia_use_system_libjpeg_turbo=false',
+            'skia_use_system_libpng=false',
+            'skia_use_system_libwebp=false',
+            'skia_use_system_zlib=false',
+            'skia_use_freetype=true',
+            'skia_use_system_freetype2=false',
+            'skia_use_harfbuzz=true',
+            'skia_use_system_harfbuzz=false',
+            'skia_enable_pdf=true',
+            'skia_enable_skottie=true',
+            'skia_enable_svg=true',
+            'skia_enable_ganesh=true',
+            'skia_enable_graphite=true',
+            'skia_use_dawn=true',
+            'skia_use_gl=true',
+            'skia_use_vulkan=true',
+            'skia_use_direct3d=true',
+            'skia_use_angle=true',
+            'skia_enable_spirv_validation=false',
+            'target_os="win"',
+            'target_cpu="x64"',
             'extra_cflags_c=["/MD"]',
-            'extra_cflags_cc=["/MD", "-D_USE_MATH_DEFINES"]'
-        )
-        
-        $buildArgs = $args -join " "
+            'extra_cflags_cc=["/MD", "-D_USE_MATH_DEFINES", "/std:c++20"]' # <-- 修改点
+        ) -join ' '
+
         echo "BUILD_ARGS=$buildArgs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       shell: powershell
 
-    # 步骤 7: 使用 GN 生成 Ninja 构建文件
     - name: Generate Skia Build Files with GN
       run: |
         cd skia
-        bin/gn gen out/Release --args="$BUILD_ARGS"
+        gn gen out/Release --args="$BUILD_ARGS"
       shell: bash
       env:
         BUILD_ARGS: ${{ env.BUILD_ARGS }}
 
-    # 步骤 8: 使用 Ninja 并行编译 Skia
     - name: Compile Skia with Ninja
       run: |
         cd skia
         ninja -C out/Release -j8
       shell: bash
 
-    # 步骤 9: 按指定结构创建发布包
     - name: Create Skia Release Package
       id: package
       run: |
-        $packageName = "skia-win-x64"
+        $packageName = "skia-win-x64-cpp20"
         $packageDir = "skia/package"
         $skiaSourceDir = "skia"
         
-        # 1. 创建基础目录: package/include, package/lib, package/bin
-        New-Item -Path $packageDir, "$packageDir/include", "$packageDir/lib", "$packageDir/bin" -ItemType Directory
+        New-Item -Path $packageDir, (Join-Path $PackageDir "include"), (Join-Path $PackageDir "lib"), (Join-Path $PackageDir "bin") -ItemType Directory | Out-Null
         
-        # 2. 定义复制函数，用于精确复制头文件
         function Copy-Headers($sourceRelativePath, $destRelativePath) {
             $fullSourcePath = Join-Path $skiaSourceDir $sourceRelativePath
-            $fullDestPath = Join-Path $packageDir $destRelativePath
-            
-            if (-not (Test-Path $fullDestPath)) {
-                New-Item -ItemType Directory -Path $fullDestPath | Out-Null
-            }
-
+            $fullDestPath = Join-Path $PackageDir $destRelativePath
+            if (-not (Test-Path $fullDestPath)) { New-Item -ItemType Directory -Path $fullDestPath | Out-Null }
             Get-ChildItem -Path $fullSourcePath -Recurse -File | Where-Object { $_.Extension -in @(".h", ".hpp") } | ForEach-Object {
                 $relativeFilePath = $_.FullName.Substring($fullSourcePath.Length)
                 $destinationFile = Join-Path $fullDestPath $relativeFilePath
-                
                 $destinationDir = Split-Path -Path $destinationFile -Parent
-                if (-not (Test-Path $destinationDir)) {
-                    New-Item -ItemType Directory -Path $destinationDir | Out-Null
-                }
+                if (-not (Test-Path $destinationDir)) { New-Item -ItemType Directory -Path $destinationDir | Out-Null }
                 Copy-Item -Path $_.FullName -Destination $destinationFile
             }
         }
-
-        # 3. 按预期结构执行复制
-        # skia/include/* -> package/include/include/*
-        Copy-Item -Path "$skiaSourceDir/include/*" -Destination "$packageDir/include/include/" -Recurse
-        # skia/modules/ -> package/include/modules/
+        
+        Copy-Item -Path (Join-Path $skiaSourceDir "include/*") -Destination (Join-Path $PackageDir "include/include/") -Recurse
         Copy-Headers "modules" "include/modules"
-        # skia/third_party/ -> package/include/include/third_party
         Copy-Headers "third_party" "include/include/third_party"
-
-        # 4. 复制编译产物
-        Get-ChildItem -Path "$skiaSourceDir/out/Release" -Filter *.lib -Recurse | Copy-Item -Destination "$packageDir/lib/"
-        Get-ChildItem -Path "$skiaSourceDir/out/Release" -Filter *.dll -Recurse | Copy-Item -Destination "$packageDir/bin/"
-        Get-ChildItem -Path "$skiaSourceDir/out/Release" -Filter *.exe -Recurse | Copy-Item -Destination "$packageDir/bin/"
         
-        # 5. 创建构建信息文件
+        Get-ChildItem -Path (Join-Path $skiaSourceDir "out/Release") -Filter *.lib -Recurse | Copy-Item -Destination (Join-Path $PackageDir "lib/")
+        Get-ChildItem -Path (Join-Path $skiaSourceDir "out/Release") -Filter *.dll -Recurse | Copy-Item -Destination (Join-Path $PackageDir "bin/")
+        
         @"
-        Skia Build Information for Windows x64
-        =======================================
-        Platform: Windows, Architecture: x64
-        Build Mode: Release (Official Weekly Build)
+        Skia C++20 Build Information
+        =============================
+        Enabled Backends: Ganesh, Graphite, Dawn
+        "@ | Set-Content -Path (Join-Path $PackageDir "BUILD_INFO.txt")
         
-        Enabled GPU Backends:
-        - Ganesh (Legacy)
-        - Graphite (Next-gen)
-        - Dawn (WebGPU)
-        
-        Supported APIs:
-        - Direct3D 11/12
-        - Vulkan
-        - OpenGL (via ANGLE)
-        
-        Windows Specifics: C++ Runtime /MD
-        "@ | Set-Content -Path "$packageDir/BUILD_INFO.txt"
-        
-        # 6. 创建 CMakeLists.txt
+        # CMakeLists.txt 已更新为 C++20
         @"
-        cmake_minimum_required(VERSION 3.15)
+        cmake_minimum_required(VERSION 3.18)
         project(SkiaPrebuilt LANGUAGES CXX C)
 
-        set(CMAKE_CXX_STANDARD 17)
+        set(CMAKE_CXX_STANDARD 20) # <-- 修改点
         set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
         add_library(skia INTERFACE)
         add_library(skia::skia ALIAS skia)
-
         get_filename_component(SKIA_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
-        
-        # 包含路径已更新为新的顶层 include 目录
-        target_include_directories(skia INTERFACE
-            "$<BUILD_INTERFACE:${SKIA_ROOT_DIR}/include>"
-        )
-        
+        target_include_directories(skia INTERFACE "$<BUILD_INTERFACE:${SKIA_ROOT_DIR}/include>")
         file(GLOB SKIA_LIBRARIES "${SKIA_ROOT_DIR}/lib/*.lib")
+        target_link_libraries(skia INTERFACE ${SKIA_LIBRARIES} OpenGL32 Gdi32 User32 Kernel32 Ole32 OleAut32 Uuid Advapi32 Shell32 Usp10 Ws2_32 d3d11 dxgi d3dcompiler dxguid d3d12)
+        target_compile_definitions(skia INTERFACE SK_GANESH SK_GRAPHITE SK_DAWN SK_DIRECT3D SK_VULKAN SK_GL SK_BUILD_FOR_WIN UNICODE _UNICODE)
+        target_compile_options(skia INTERFACE "$<CONFIG:Debug>:/MDd" "$<CONFIG:Release>:/MD" "$<CONFIG:RelWithDebInfo>:/MD" "$<CONFIG:MinSizeRel>:/MD")
+        "@ | Set-Content -Path (Join-Path $PackageDir "CMakeLists.txt")
         
-        target_link_libraries(skia INTERFACE
-            ${SKIA_LIBRARIES}
-            # System Libraries
-            OpenGL32 Gdi32 User32 Kernel32 Ole32 OleAut32 Uuid Advapi32 Shell32 Usp10 Ws2_32
-            # DirectX Libraries (D3D12 for Dawn)
-            d3d11 dxgi d3dcompiler dxguid d3d12
-        )
-
-        target_compile_definitions(skia INTERFACE
-            SK_GANESH SK_GRAPHITE SK_DAWN
-            SK_DIRECT3D SK_VULKAN SK_GL
-            SK_BUILD_FOR_WIN UNICODE _UNICODE
-        )
-        
-        target_compile_options(skia INTERFACE
-            "$<CONFIG:Debug>:/MDd" "$<CONFIG:Release>:/MD"
-            "$<CONFIG:RelWithDebInfo>:/MD" "$<CONFIG:MinSizeRel>:/MD"
-        )
-        "@ | Set-Content -Path "$packageDir/CMakeLists.txt"
-        
-        # 7. 打包成 ZIP
         $zipFile = "$skiaSourceDir/$($packageName).zip"
-        Compress-Archive -Path "$packageDir/*" -DestinationPath $zipFile
-        
+        Compress-Archive -Path (Join-Path $PackageDir "*") -DestinationPath $zipFile
         echo "PACKAGE_NAME=$packageName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
         echo "PACKAGE_PATH=$zipFile" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       shell: powershell
 
-    # 步骤 10: 上传构建产物
     - name: Upload Skia Artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.package.outputs.PACKAGE_NAME }}
         path: ${{ steps.package.outputs.PACKAGE_PATH }}
 
-  # 作业 2: 创建 GitHub Release
   create-release:
     needs: build-skia-windows
     runs-on: ubuntu-latest
@@ -256,11 +177,11 @@ jobs:
       id: get_tag
       run: |
         if [ "${{ github.event_name }}" = "schedule" ]; then
-          echo "tag=skia-weekly-$(date +%Y%m%d)" >> $GITHUB_OUTPUT
-          echo "name=Skia Windows x64 Weekly Build $(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          echo "tag=skia-weekly-cpp20-$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          echo "name=Skia Windows C++20 Weekly Build $(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
         else
-          echo "tag=skia-build-${{ github.run_number }}" >> $GITHUB_OUTPUT
-          echo "name=Skia Windows x64 Build v${{ github.run_number }}" >> $GITHUB_OUTPUT
+          echo "tag=skia-build-cpp20-${{ github.run_number }}" >> $GITHUB_OUTPUT
+          echo "name=Skia Windows C++20 Build v${{ github.run_number }}" >> $GITHUB_OUTPUT
         fi
 
     - name: Create GitHub Release
@@ -269,21 +190,9 @@ jobs:
         tag_name: ${{ steps.get_tag.outputs.tag }}
         name: ${{ steps.get_tag.outputs.name }}
         body: |
-          # Skia Windows x64 Weekly Build (Ganesh + Graphite + Dawn)
-          
-          This release contains a pre-compiled version of Skia for **Windows x64**.
-          
-          ## Key Features
-          - **GPU Backends**: Includes **Ganesh**, **Graphite**, and **Dawn (WebGPU)**.
-          - **Supported APIs**: Direct3D 11/12, Vulkan, and OpenGL (via ANGLE).
-          - **Packaging**: Headers organized in a new structure for easier integration.
-          
-          ## CMake Usage
-          ```cmake
-          set(CMAKE_CXX_STANDARD 17)
-          add_subdirectory(path/to/skia/package)
-          target_link_libraries(your_target PRIVATE skia::skia)
-          ```
+          # Skia Windows x64 C++20 Weekly Build
+          - **C++ Standard**: C++20
+          - **GPU Backends**: Ganesh, Graphite, and Dawn (WebGPU).
         files: artifacts/**/*.zip
         make_latest: true
       env:
