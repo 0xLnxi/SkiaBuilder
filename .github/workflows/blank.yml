@@ -114,7 +114,7 @@ jobs:
     - name: Generate Skia Build Files with GN
       run: |
         cd skia
-        bin/gn gen out/Release --args="$env:BUILD_ARGS"
+        bin/gn gen out/Release --args="$BUILD_ARGS"
       shell: bash
       env:
         BUILD_ARGS: ${{ env.BUILD_ARGS }}
