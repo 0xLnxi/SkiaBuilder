@@ -1,60 +1,62 @@
-# 文件注释: 用于每周构建Skia的GitHub Actions工作流 (V22 - 最终完整修正版)
+# 文件注释: 用于构建Skia for Windows x64 (启用Graphite Dawn后端) 的GitHub Actions工作流
 
-name: 'Weekly Build Skia'
+name: 'Build Skia for Windows x64 (Dawn Backend)'
 
 on:
   workflow_dispatch: # 允许手动触发
   schedule:
-    - cron: '0 0 * * 0' # 每周日午夜触发
+    - cron: '0 0 * * 0' # 每周日午夜(UTC)触发
 
 jobs:
-  build_skia_windows:
-    name: 'Build Skia for Windows (x64)'
+  build_skia_windows_dawn:
+    name: 'Build Skia for Windows (x64, Dawn)'
     runs-on: windows-latest
 
     steps:
-      - name: 'Checkout Skia Source Code'
-        uses: actions/checkout@v4
-        with:
-          repository: 'google/skia'
-          path: 'skia'
-
+      # 1. 安装 depot_tools, Skia 的构建工具集
       - name: 'Install and Initialize depot_tools'
         shell: pwsh
         run: |
           git clone 'https://chromium.googlesource.com/chromium/tools/depot_tools.git'
           $depotToolsPath = "${{ github.workspace }}/depot_tools"
-          $env:PATH = "$depotToolsPath;$env:PATH"
+          # 将 depot_tools 添加到环境变量
           echo "$depotToolsPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # 检查 gclient 是否可用
           gclient --version
-          Write-Host "Depot_tools initialized successfully."
-      
-      - name: 'Neutralize emsdk activation script'
-        working-directory: ./skia
-        shell: pwsh
-        run: |
-          $scriptPath = "bin/activate-emsdk"
-          $dummyScript = "import sys; sys.exit(0)"
-          Set-Content -Path $scriptPath -Value $dummyScript
-          Write-Host "Successfully neutralized activate-emsdk script."
+          Write-Host "Depot_tools initialized."
 
-      - name: 'Sync Skia Dependencies (git-sync-deps)'
-        working-directory: ./skia
+      # 2. 获取 Skia 源代码并同步依赖
+      - name: 'Checkout Skia Source Code and Sync Dependencies'
         shell: pwsh
         run: |
+          git clone 'https://skia.googlesource.com/skia.git'
+          cd skia
           python tools/git-sync-deps
+          cd ..
+          Write-Host "Skia source and dependencies are ready."
 
+      # 3. 配置 Skia 构建参数 (args.gn)
       - name: 'Setup Build Configuration'
         working-directory: ./skia
-        id: setup_build
         shell: pwsh
         run: |
+          # 定义输出目录
           $outDir = "out/Release"
           echo "out_dir=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
-          # 关键修正: 移除 is_official_build = true 以允许 /MD 运行时生效，解决LNK2038错误
+          # 创建gn配置文件，核心设置在此
+          # 修正: 移除了 is_official_build=true 来解决 /MT 和 /MD 的链接冲突
+          # 新增: 启用 Graphite 和 Dawn 后端
           $gnFileContent = "is_component_build = false`n" +
                            "is_debug = false`n" +
+                           "skia_enable_graphite = true`n" +
+                           "skia_use_dawn = true`n" +
+                           "skia_use_gl = true`n" +
+                           "skia_use_d3d = true`n" +
+                           "skia_use_vulkan = true`n" +
+                           "skia_enable_skottie = true`n" +
+                           "skia_enable_svg = true`n" +
+                           "skia_enable_pdf = false`n" +
                            "skia_use_system_expat = false`n" +
                            "skia_use_system_libjpeg_turbo = false`n" +
                            "skia_use_system_libpng = false`n" +
@@ -63,94 +65,81 @@ jobs:
                            "skia_use_system_icu = false`n" +
                            "skia_use_system_harfbuzz = false`n" +
                            "skia_use_system_freetype2 = false`n" +
-                           "skia_use_gl = true`n" +
-                           "skia_use_vulkan = true`n" +
-                           "skia_use_d3d = true`n" +
-                           "skia_enable_ganesh = true`n" +
-                           "skia_use_dawn = true`n" +
-                           "skia_enable_graphite = true`n" +
-                           "skia_enable_pdf = false`n" +
-                           "skia_enable_skottie = true`n" +
                            "`n" +
+                           "# 修正: 设置正确的 /MD 运行时，并告知链接器忽略静态库以防冲突" +
                            "extra_cflags = [ `"/MD`" ]`n" +
                            "extra_cflags_cc = [ `"/std:c++20`"`, `"/MD`" ]`n" +
                            "extra_ldflags = [ `"/NODEFAULTLIB:LIBCMT.lib`" ]"
           
-          Set-Content -Path "args.gn" -Value $gnFileContent
-          Write-Host "Build arguments saved to args.gn (using /MD runtime)"
+          # 写入 args.gn 文件
+          # Skia的构建系统将读取此文件来配置编译选项
+          New-Item -Path $outDir -ItemType Directory -Force
+          Set-Content -Path (Join-Path $outDir "args.gn") -Value $gnFileContent
+          Write-Host "Build arguments saved to skia/$outDir/args.gn"
 
-      - name: 'Generate Ninja Files (gn gen)'
+      # 4. 使用 GN (Generate Ninja) 生成构建文件
+      - name: 'Generate Ninja Files'
         working-directory: ./skia
         shell: pwsh
         run: |
-          gn gen "${{ env.out_dir }}" --args-file="args.gn"
+          # depot_tools 中的 python.bat 会自动执行正确的 python 版本
+          python.bat tools/gn.py gen "${{ env.out_dir }}"
+          Write-Host "Ninja build files generated."
 
-      - name: 'Compile with Ninja'
+      # 5. 使用 Ninja 编译 Skia
+      - name: 'Compile Skia with Ninja'
         working-directory: ./skia
         shell: pwsh
         run: |
-          ninja -j 16 -C "${{ env.out_dir }}" skia modules
+          # -j 16 使用16个核心并行编译，加快速度
+          ninja -j 16 -C "${{ env.out_dir }}"
+          Write-Host "Skia compilation complete."
 
-      - name: 'Prepare Package'
-        working-directory: ./skia
-        id: prepare_package
+      # 6. 打包构建产物
+      - name: 'Package Build Artifacts'
         shell: pwsh
         run: |
-          # 1. 定义所有打包路径
-          $stagingDir = "${{ github.workspace }}/staging"
+          # 定义打包目录结构
+          $stagingDir = "${{ github.workspace }}/skia-package"
           $binDir = "$stagingDir/bin"
           $libDir = "$stagingDir/lib"
-          $mainIncludeDir = "$stagingDir/include"
-          $modulesHeadersTargetDir = "$mainIncludeDir/modules"
-          New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $mainIncludeDir, $modulesHeadersTargetDir -Force
+          $includeDir = "$stagingDir/include"
+          New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $includeDir -Force
 
-          # 2. 修正: 严格按照 include/include 结构复制核心头文件
-          Write-Host "Copying core Skia headers to staging/include/include/..."
-          Copy-Item -Path "include" -Destination $mainIncludeDir -Recurse
-
-          # 3. 修正: 严格按照 include/modules/<module_name> 结构复制所有模块的头文件
-          Write-Host "Copying all module headers to staging/include/modules/..."
-          $modulesSourceRoot = "modules"
-          # 修正: 只获取一级子目录，确保能找到所有模块
-          $moduleDirs = Get-ChildItem -Path $modulesSourceRoot -Directory
-          foreach ($moduleDir in $moduleDirs) {
-              $moduleIncludeSourcePath = Join-Path $moduleDir.FullName "include"
-              # 检查模块是否包含 'include' 文件夹
-              if (Test-Path $moduleIncludeSourcePath -PathType Container) {
-                  $moduleName = $moduleDir.Name
-                  $moduleIncludeDestPath = Join-Path $modulesHeadersTargetDir $moduleName
-                  New-Item -ItemType Directory -Path $moduleIncludeDestPath -Force | Out-Null
-                  Write-Host "Copying headers for module '$moduleName' to '$moduleIncludeDestPath'"
-                  # 复制模块 'include' 目录的 *内容*
-                  Copy-Item -Path "$($moduleIncludeSourcePath)/*" -Destination $moduleIncludeDestPath -Recurse
+          # 复制头文件 (扁平化结构，便于集成)
+          Copy-Item -Path "skia/include/*" -Destination $includeDir -Recurse
+          $modulesSourcePath = (Get-Item "skia/modules").FullName
+          $moduleIncludeDirs = Get-ChildItem -Path $modulesSourcePath -Recurse -Directory -Filter "include"
+          foreach ($dir in $moduleIncludeDirs) {
+              $relativeIncludePath = $dir.FullName.Substring($modulesSourcePath.Length).TrimStart('\/')
+              $moduleName = ($relativeIncludePath -split '[\\/]') | Select-Object -First 1
+              if (-not ([string]::IsNullOrEmpty($moduleName))) {
+                  $destinationPath = Join-Path $includeDir $moduleName
+                  New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
+                  Copy-Item -Path "$($dir.FullName)/*" -Destination $destinationPath -Recurse -Force
               }
           }
+          Write-Host "Headers copied."
 
-          # 4. 复制库文件和DLL
-          Write-Host "Copying libraries and DLLs..."
-          Copy-Item -Path "${{ env.out_dir }}/*.lib" -Destination $libDir
-          Copy-Item -Path "${{ env.out_dir }}/d3dcompiler_47.dll" -Destination $binDir -ErrorAction SilentlyContinue
+          # 复制库文件 (.lib)
+          Copy-Item -Path "skia/${{ env.out_dir }}/*.lib" -Destination $libDir
+          Write-Host "Libraries (.lib) copied."
+
+          # 复制 Dawn 和 D3D 需要的动态库 (.dll)
+          Copy-Item -Path "skia/${{ env.out_dir }}/dawn.dll" -Destination $binDir
+          Copy-Item -Path "skia/${{ env.out_dir }}/tint.dll" -Destination $binDir
+          Copy-Item -Path "skia/${{ env.out_dir }}/d3dcompiler_47.dll" -Destination $binDir
+          Write-Host "Required DLLs (dawn, tint, d3dcompiler) copied."
           
-          # 5. 修正: 生成与 include/include, include/modules 结构配套的 CMake 文件
-          Write-Host "Creating SkiaConfig.cmake for the nested include structure..."
+          # 创建一个简洁的 SkiaConfig.cmake 文件
           $cmakeConfigContent = "if(NOT TARGET Skia::Skia)`n" +
                                 "    add_library(Skia::Skia INTERFACE IMPORTED)`n" +
-                                "endif()`n" +
-                                "`n" +
-                                "set(Skia_ROOT_DIR `"``${CMAKE_CURRENT_LIST_DIR}`"`)`n" +
-                                "set(Skia_INCLUDE_DIR_CORE `"``${Skia_ROOT_DIR}/include/include`"`)`n" +
-                                "set(Skia_INCLUDE_DIR_MODULES `"``${Skia_ROOT_DIR}/include/modules`"`)`n" +
-                                "set(Skia_LIBRARY_DIR `"``${Skia_ROOT_DIR}/lib`"`)`n" +
-                                "`n" +
-                                "target_include_directories(Skia::Skia INTERFACE`n" +
-                                "    `"`$``<BUILD_INTERFACE:``${Skia_INCLUDE_DIR_CORE}>`"`n" +
-                                "    `"`$``<BUILD_INTERFACE:``${Skia_INCLUDE_DIR_MODULES}>`"`n" +
-                                "    `"`$``<INSTALL_INTERFACE:include/include>`"`n" +
-                                "    `"`$``<INSTALL_INTERFACE:include/modules>`"`n" +
-                                ")`n" +
-                                "`n" +
-                                "file(GLOB Skia_LIBRARIES `"``${Skia_LIBRARY_DIR}/*.lib`"`)`n" +
-                                "`n" +
+                                "endif()`n`n" +
+                                "set(Skia_PACKAGE_DIR `"``${CMAKE_CURRENT_LIST_DIR}`"`)`n" +
+                                "set(Skia_INCLUDE_DIR `"``${Skia_PACKAGE_DIR}/include`"`)`n" +
+                                "set(Skia_LIBRARY_DIR `"``${Skia_PACKAGE_DIR}/lib`"`)`n`n" +
+                                "target_include_directories(Skia::Skia INTERFACE `"``${Skia_INCLUDE_DIR}`"`)`n`n" +
+                                "file(GLOB Skia_LIBRARIES `"``${Skia_LIBRARY_DIR}/*.lib`"`)`n`n" +
                                 "target_link_libraries(Skia::Skia INTERFACE`n" +
                                 "    ``${Skia_LIBRARIES}`n" +
                                 "    d3d11.lib`n" +
@@ -165,28 +154,15 @@ jobs:
                                 "    gdi32.lib`n" +
                                 ")"
           Set-Content -Path "$stagingDir/SkiaConfig.cmake" -Value $cmakeConfigContent
-          
-          # 6. 创建一个示例 CMakeLists.txt
-          $cmakeListsContent = "cmake_minimum_required(VERSION 3.20)`n" +
-                               "project(MySkiaApp)`n`n" +
-                               "set(CMAKE_CXX_STANDARD 20)`n" +
-                               "set(CMAKE_CXX_STANDARD_REQUIRED ON)`n`n" +
-                               "# 将 <path_to_win-x64> 替换为解压后的win-x64文件夹路径`n" +
-                               "set(Skia_DIR `<path_to_win-x64>`)`n" +
-                               "find_package(Skia REQUIRED)`n`n" +
-                               "add_executable(main main.cpp)`n`n" +
-                               "target_link_libraries(main PRIVATE Skia::Skia)"
-          Set-Content -Path "$stagingDir/CMakeLists.txt" -Value $cmakeListsContent
-          
-          echo "staging_directory=$stagingDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "SkiaConfig.cmake created."
 
-      - name: 'Create Zip Archive'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "${{ env.staging_directory }}/*" -DestinationPath "win-x64.zip"
+          # 创建最终的压缩包
+          Compress-Archive -Path "$stagingDir/*" -DestinationPath "skia-win-x64-dawn.zip"
+          Write-Host "Package skia-win-x64-dawn.zip created."
 
-      - name: 'Upload Artifact'
+      # 7. 上传构建产物
+      - name: 'Upload Skia Package'
         uses: actions/upload-artifact@v4
         with:
-          name: 'skia-win-x64-bundle'
-          path: 'win-x64.zip'
+          name: 'skia-win-x64-dawn-package'
+          path: 'skia-win-x64-dawn.zip'
