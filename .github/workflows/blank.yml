@@ -1,7 +1,8 @@
 # .github/workflows/build-dawn.yml
 # 文件注释: 用于每周构建 Dawn 的 GitHub Actions 工作流 (最终规避方案)
+# 版本: v2 - 使用 /MD 动态库构建并包含模块头文件
 
-name: 'Weekly Build Dawn'
+name: 'Weekly Build Dawn (/MD)'
 
 on:
   workflow_dispatch: # 允许手动触发
@@ -10,7 +11,7 @@ on:
 
 jobs:
   build_dawn_windows:
-    name: 'Build Dawn for Windows (x64)'
+    name: 'Build Dawn for Windows (x64, /MD)'
     runs-on: windows-latest
 
     steps:
@@ -48,19 +49,27 @@ jobs:
           $outDir = "out/Release"
           echo "out_dir=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
+          # --- 变更 1: 修改 GN 构建参数 ---
+          # is_component_build = true 会切换到 /MD (动态) 运行时库并生成 DLL
+          # symbol_level = 0 会剥离调试符号，减小包体大小
           $gnFileContent = @"
           is_official_build = true
           is_debug = false
+          is_component_build = true
+          symbol_level = 0
           "@
           
-          Set-Content -Path "args.gn" -Value $gnFileContent
-          Write-Host "Build arguments saved to args.gn"
+          # gn gen 会在 out/Release 目录下创建 args.gn
+          New-Item -Path "${{ env.out_dir }}" -ItemType Directory -Force
+          Set-Content -Path "${{ env.out_dir }}/args.gn" -Value $gnFileContent
+          Write-Host "Build arguments saved to ${{ env.out_dir }}/args.gn"
 
       - name: 'Generate Ninja Files (gn gen)'
         working-directory: ./dawn_project/dawn
         shell: pwsh
         run: |
-          gn gen "${{ env.out_dir }}" --args-file="args.gn"
+          # GN 会自动读取 out/Release/args.gn 文件
+          gn gen "${{ env.out_dir }}"
 
       - name: 'Compile with Ninja'
         working-directory: ./dawn_project/dawn
@@ -77,12 +86,21 @@ jobs:
           $binDir = "$stagingDir/bin"
           $libDir = "$stagingDir/lib"
           $includeDir = "$stagingDir/include"
-          New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $includeDir, "$libDir/cmake"
+          New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $includeDir, "$libDir/cmake" -Force
           
+          # --- 变更 2: 捕获更多头文件 ---
           Write-Host "Copying public headers..."
           Copy-Item -Path "src/include/dawn" -Destination $includeDir -Recurse
           
-          Write-Host "Copying library files..."
+          Write-Host "Copying generated headers..."
+          Copy-Item -Path "${{ env.out_dir }}/gen/include/dawn" -Destination $includeDir -Recurse
+          
+          Write-Host "Copying internal module headers..."
+          Copy-Item -Path "src/dawn/common" -Destination "$includeDir/dawn" -Recurse
+          Copy-Item -Path "src/dawn/native" -Destination "$includeDir/dawn" -Recurse
+          Copy-Item -Path "src/dawn/platform" -Destination "$includeDir/dawn" -Recurse
+
+          Write-Host "Copying library files (import libs)..."
           Copy-Item -Path "${{ env.out_dir }}/*.lib" -Destination $libDir
           
           Write-Host "Copying DLLs..."
@@ -91,7 +109,8 @@ jobs:
           Write-Host "Copying CMake package files..."
           Copy-Item -Path "${{ env.out_dir }}/lib/cmake/dawn" -Destination "$libDir/cmake" -Recurse
           
-          $cmakeListsContent = "cmake_minimum_required(VERSION 3.20)`nproject(MyDawnApp)`n`nset(CMAKE_CXX_STANDARD 17)`n`n# 将 <path_to_dawn-win-x64> 替换为解压后的文件夹路径`nset(Dawn_DIR `<path_to_dawn-win-x64>/lib/cmake/dawn`)`nfind_package(Dawn REQUIRED)`n`nadd_executable(main main.cpp)`n`n# 链接 Dawn (Dawn::dawn 是一个包含了所有所需组件的接口目标)`ntarget_link_libraries(main PRIVATE Dawn::dawn)"
+          # --- 变更 3: 更新示例 CMakeLists.txt 的注释 ---
+          $cmakeListsContent = "cmake_minimum_required(VERSION 3.20)`nproject(MyDawnApp)`n`nset(CMAKE_CXX_STANDARD 17)`n`n# 将 <path_to_dawn-win-x64> 替换为解压后的文件夹路径`nset(Dawn_DIR `<path_to_dawn-win-x64>/lib/cmake/dawn`)`nfind_package(Dawn REQUIRED)`n`nadd_executable(main main.cpp)`n`n# 链接 Dawn (Dawn::dawn 是一个包含了所有所需组件的接口目标)`ntarget_link_libraries(main PRIVATE Dawn::dawn)`n`n# 注意: 这是一个动态库 (/MD) 构建版本。`n# 运行时，你需要将包内 bin/ 目录下的所有 .dll 文件复制到你的可执行文件旁边。"
           Set-Content -Path "$stagingDir/CMakeLists.txt" -Value $cmakeListsContent
           
           echo "staging_directory=$stagingDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -99,10 +118,10 @@ jobs:
       - name: 'Create Zip Archive'
         shell: pwsh
         run: |
-          Compress-Archive -Path "${{ env.staging_directory }}/*" -DestinationPath "dawn-win-x64.zip"
+          Compress-Archive -Path "${{ env.staging_directory }}/*" -DestinationPath "dawn-win-x64-md.zip"
 
       - name: 'Upload Artifact'
         uses: actions/upload-artifact@v4
         with:
-          name: 'dawn-win-x64-bundle'
-          path: 'dawn-win-x64.zip'
+          name: 'dawn-win-x64-md-bundle'
+          path: 'dawn-win-x64-md.zip'
