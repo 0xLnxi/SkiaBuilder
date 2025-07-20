@@ -31,14 +31,17 @@ jobs:
     - name: Install Windows Dependencies
       run: choco install ninja -y
 
-    - name: Get depot_tools
+    - name: Get and Initialize depot_tools
       run: |
         git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-        echo "${{ github.workspace }}\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        $depotToolsDir = "${{ github.workspace }}\depot_tools"
+        
+        # 将路径添加到 GITHUB_PATH 供后续步骤使用
+        echo $depotToolsDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         echo "DEPOT_TOOLS_WIN_TOOLCHAIN=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         
-        # 【重要新增】运行 gclient 以初始化 depot_tools 环境
-        gclient.bat
+        # 【重要修改】使用完整路径调用 gclient.bat 以立即执行初始化
+        & (Join-Path $depotToolsDir "gclient.bat")
       shell: powershell
 
     - name: Fetch Skia Source Code and Sync Dependencies
@@ -49,8 +52,6 @@ jobs:
 
     - name: Configure Skia Build Arguments
       run: |
-        cd skia
-        
         $buildArgsContent = @"
         is_official_build = true
         is_debug = false
@@ -81,7 +82,7 @@ jobs:
         extra_cflags_cc = [ "/MD", "-D_USE_MATH_DEFINES", "/std:c++20" ]
         "@
         
-        $buildOutputDir = "skia/out/Release"
+        $buildOutputDir = "${{ github.workspace }}\skia\out\Release"
         New-Item -ItemType Directory -Force -Path $buildOutputDir | Out-Null
         $buildArgsContent | Set-Content -Path (Join-Path $buildOutputDir "args.gn")
       shell: powershell
@@ -102,14 +103,14 @@ jobs:
       id: package
       run: |
         $packageName = "skia-win-x64-cpp20"
-        $packageDir = "skia/package"
-        $skiaSourceDir = "skia"
+        $packageDir = "${{ github.workspace }}\skia\package"
+        $skiaSourceDir = "${{ github.workspace }}\skia"
         
-        New-Item -Path $packageDir, (Join-Path $PackageDir "include"), (Join-Path $PackageDir "lib"), (Join-Path $PackageDir "bin") -ItemType Directory | Out-Null
+        New-Item -Path $packageDir, (Join-Path $packageDir "include"), (Join-Path $packageDir "lib"), (Join-Path $packageDir "bin") -ItemType Directory | Out-Null
         
         function Copy-Headers($sourceRelativePath, $destRelativePath) {
             $fullSourcePath = Join-Path $skiaSourceDir $sourceRelativePath
-            $fullDestPath = Join-Path $PackageDir $destRelativePath
+            $fullDestPath = Join-Path $packageDir $destRelativePath
             if (-not (Test-Path $fullDestPath)) { New-Item -ItemType Directory -Path $fullDestPath | Out-Null }
             Get-ChildItem -Path $fullSourcePath -Recurse -File | Where-Object { $_.Extension -in @(".h", ".hpp") } | ForEach-Object {
                 $relativeFilePath = $_.FullName.Substring($fullSourcePath.Length)
@@ -120,12 +121,12 @@ jobs:
             }
         }
         
-        Copy-Item -Path (Join-Path $skiaSourceDir "include/*") -Destination (Join-Path $PackageDir "include/include/") -Recurse
+        Copy-Item -Path (Join-Path $skiaSourceDir "include\*") -Destination (Join-Path $packageDir "include\include\") -Recurse
         Copy-Headers "modules" "include/modules"
         Copy-Headers "third_party" "include/include/third_party"
         
-        Get-ChildItem -Path (Join-Path $skiaSourceDir "out/Release") -Filter *.lib -Recurse | Copy-Item -Destination (Join-Path $PackageDir "lib/")
-        Get-ChildItem -Path (Join-Path $skiaSourceDir "out/Release") -Filter *.dll -Recurse | Copy-Item -Destination (Join-Path $PackageDir "bin/")
+        Get-ChildItem -Path (Join-Path $skiaSourceDir "out\Release") -Filter *.lib -Recurse | Copy-Item -Destination (Join-Path $PackageDir "lib\")
+        Get-ChildItem -Path (Join-Path $skiaSourceDir "out\Release") -Filter *.dll -Recurse | Copy-Item -Destination (Join-Path $PackageDir "bin\")
         
         @"
         Skia C++20 Build Information
@@ -148,7 +149,7 @@ jobs:
         target_compile_options(skia INTERFACE "$<CONFIG:Debug>:/MDd" "$<CONFIG:Release>:/MD" "$<CONFIG:RelWithDebInfo>:/MD" "$<CONFIG:MinSizeRel>:/MD")
         "@ | Set-Content -Path (Join-Path $PackageDir "CMakeLists.txt")
         
-        $zipFile = "$skiaSourceDir/$($packageName).zip"
+        $zipFile = "$skiaSourceDir\$($packageName).zip"
         Compress-Archive -Path (Join-Path $PackageDir "*") -DestinationPath $zipFile
         echo "PACKAGE_NAME=$packageName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
         echo "PACKAGE_PATH=$zipFile" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
