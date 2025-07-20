@@ -19,9 +19,14 @@ jobs:
         run: |
           git clone 'https://chromium.googlesource.com/chromium/tools/depot_tools.git'
           $depotToolsPath = "${{ github.workspace }}/depot_tools"
-          # 将 depot_tools 添加到环境变量
+          
+          # 修正:
+          # 1. 为后续步骤更新 GITHUB_PATH
           echo "$depotToolsPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          # 检查 gclient 是否可用
+          # 2. 为当前步骤的会话更新 $env:PATH
+          $env:PATH = "$depotToolsPath;$env:PATH"
+          
+          # 现在可以立即调用 gclient
           gclient --version
           Write-Host "Depot_tools initialized."
 
@@ -40,13 +45,9 @@ jobs:
         working-directory: ./skia
         shell: pwsh
         run: |
-          # 定义输出目录
           $outDir = "out/Release"
           echo "out_dir=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
-          # 创建gn配置文件，核心设置在此
-          # 修正: 移除了 is_official_build=true 来解决 /MT 和 /MD 的链接冲突
-          # 新增: 启用 Graphite 和 Dawn 后端
           $gnFileContent = "is_component_build = false`n" +
                            "is_debug = false`n" +
                            "skia_enable_graphite = true`n" +
@@ -66,13 +67,10 @@ jobs:
                            "skia_use_system_harfbuzz = false`n" +
                            "skia_use_system_freetype2 = false`n" +
                            "`n" +
-                           "# 修正: 设置正确的 /MD 运行时，并告知链接器忽略静态库以防冲突" +
                            "extra_cflags = [ `"/MD`" ]`n" +
                            "extra_cflags_cc = [ `"/std:c++20`"`, `"/MD`" ]`n" +
                            "extra_ldflags = [ `"/NODEFAULTLIB:LIBCMT.lib`" ]"
           
-          # 写入 args.gn 文件
-          # Skia的构建系统将读取此文件来配置编译选项
           New-Item -Path $outDir -ItemType Directory -Force
           Set-Content -Path (Join-Path $outDir "args.gn") -Value $gnFileContent
           Write-Host "Build arguments saved to skia/$outDir/args.gn"
@@ -82,7 +80,6 @@ jobs:
         working-directory: ./skia
         shell: pwsh
         run: |
-          # depot_tools 中的 python.bat 会自动执行正确的 python 版本
           python.bat tools/gn.py gen "${{ env.out_dir }}"
           Write-Host "Ninja build files generated."
 
@@ -91,7 +88,6 @@ jobs:
         working-directory: ./skia
         shell: pwsh
         run: |
-          # -j 16 使用16个核心并行编译，加快速度
           ninja -j 16 -C "${{ env.out_dir }}"
           Write-Host "Skia compilation complete."
 
@@ -99,14 +95,12 @@ jobs:
       - name: 'Package Build Artifacts'
         shell: pwsh
         run: |
-          # 定义打包目录结构
           $stagingDir = "${{ github.workspace }}/skia-package"
           $binDir = "$stagingDir/bin"
           $libDir = "$stagingDir/lib"
           $includeDir = "$stagingDir/include"
           New-Item -ItemType Directory -Path $stagingDir, $binDir, $libDir, $includeDir -Force
 
-          # 复制头文件 (扁平化结构，便于集成)
           Copy-Item -Path "skia/include/*" -Destination $includeDir -Recurse
           $modulesSourcePath = (Get-Item "skia/modules").FullName
           $moduleIncludeDirs = Get-ChildItem -Path $modulesSourcePath -Recurse -Directory -Filter "include"
@@ -121,17 +115,14 @@ jobs:
           }
           Write-Host "Headers copied."
 
-          # 复制库文件 (.lib)
           Copy-Item -Path "skia/${{ env.out_dir }}/*.lib" -Destination $libDir
           Write-Host "Libraries (.lib) copied."
 
-          # 复制 Dawn 和 D3D 需要的动态库 (.dll)
           Copy-Item -Path "skia/${{ env.out_dir }}/dawn.dll" -Destination $binDir
           Copy-Item -Path "skia/${{ env.out_dir }}/tint.dll" -Destination $binDir
           Copy-Item -Path "skia/${{ env.out_dir }}/d3dcompiler_47.dll" -Destination $binDir
           Write-Host "Required DLLs (dawn, tint, d3dcompiler) copied."
           
-          # 创建一个简洁的 SkiaConfig.cmake 文件
           $cmakeConfigContent = "if(NOT TARGET Skia::Skia)`n" +
                                 "    add_library(Skia::Skia INTERFACE IMPORTED)`n" +
                                 "endif()`n`n" +
@@ -156,7 +147,6 @@ jobs:
           Set-Content -Path "$stagingDir/SkiaConfig.cmake" -Value $cmakeConfigContent
           Write-Host "SkiaConfig.cmake created."
 
-          # 创建最终的压缩包
           Compress-Archive -Path "$stagingDir/*" -DestinationPath "skia-win-x64-dawn.zip"
           Write-Host "Package skia-win-x64-dawn.zip created."
 
